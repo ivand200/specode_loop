@@ -35,7 +35,7 @@ Run the relevant feedback loops for the task, such as tests, linters, typechecke
 
 ### 4. Update the plan and report
 
-Mark the completed task done in `plan.md` by changing its checkbox from `- [ ]` to `- [x]`.
+Mark the completed task done in `plan.md` by changing its checkbox from `[ ]` to `[x]`.
 
 When the selected task is complete and `plan.md` has been updated, output exactly:
 

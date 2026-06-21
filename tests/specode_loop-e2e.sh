@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNNER="$ROOT_DIR/scripts/specode_loop.sh"
+EXAMPLE_PROJECT="$ROOT_DIR/examples/basic"
 ENV_FILE="${SPECODE_LOOP_E2E_ENV:-}"
 PROJECT_DIR=""
 
@@ -51,6 +52,25 @@ assert_file_exact() {
   [[ "$actual" == "$expected" ]] || fail "expected $file to contain exactly: $expected"
 }
 
+assert_command_exact() {
+  local expected="$1"
+  shift
+  local actual
+
+  actual="$("$@")" || fail "expected command to succeed: $*"
+  [[ "$actual" == "$expected" ]] || fail "expected command output exactly: $expected"
+}
+
+assert_project_command_exact() {
+  local expected="$1"
+  local project_dir="$2"
+  shift 2
+  local actual
+
+  actual="$(cd "$project_dir" && "$@")" || fail "expected project command to succeed: $*"
+  [[ "$actual" == "$expected" ]] || fail "expected project command output exactly: $expected"
+}
+
 assert_file_missing_or_empty() {
   local file="$1"
 
@@ -67,35 +87,32 @@ assert_path_missing() {
   fi
 }
 
+assert_executable() {
+  local path="$1"
+
+  [[ -x "$path" ]] || fail "expected file to be executable: $path"
+}
+
+assert_count() {
+  local expected="$1"
+  local actual="$2"
+  local label="$3"
+
+  [[ "$actual" == "$expected" ]] || fail "expected $label to be $expected, got $actual"
+}
+
+count_file_matches() {
+  local pattern="$1"
+  local file="$2"
+
+  grep -Ec "$pattern" "$file" || true
+}
+
 make_project() {
   PROJECT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/specode_loop-e2e.XXXXXX")"
   PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
 
-  cat >"$PROJECT_DIR/prd.md" <<'EOF'
-# Specode Loop Real E2E PRD
-
-## Goal
-
-Verify Specode Loop can run a real sandboxed Codex task against a project with conventional documents.
-
-## Desired Behavior
-
-Create `artifact.txt` in this project with exactly this sentence:
-
-Specode Loop real sandbox smoke test passed.
-
-## Constraints
-
-- Do not modify files outside this fixture project except Specode Loop's copied project-local skill configuration.
-- Do not make a Git commit.
-- Keep output deterministic and plain text.
-EOF
-
-  cat >"$PROJECT_DIR/plan.md" <<'EOF'
-# Specode Loop Real E2E Plan
-
-- [ ] Create `artifact.txt` containing exactly `Specode Loop real sandbox smoke test passed.`
-EOF
+  cp -R "$EXAMPLE_PROJECT/." "$PROJECT_DIR"
 }
 
 main() {
@@ -109,7 +126,7 @@ main() {
   make_project
   log "E2E project: $PROJECT_DIR"
 
-  args=("$PROJECT_DIR" --max-iterations 2)
+  args=("$PROJECT_DIR" --max-iterations 4)
   if [[ -n "${SPECODE_LOOP_E2E_MODEL:-}" ]]; then
     args+=(--model "$SPECODE_LOOP_E2E_MODEL")
   fi
@@ -118,13 +135,29 @@ main() {
     fail "runner exited before completing the e2e task"
   fi
 
-  assert_file_exact "$PROJECT_DIR/artifact.txt" "Specode Loop real sandbox smoke test passed."
-  assert_file_contains "$PROJECT_DIR/plan.md" "- [x] Create \`artifact.txt\`"
+  assert_file_contains "$PROJECT_DIR/prd.md" "## Problem Statement"
+  assert_file_contains "$PROJECT_DIR/prd.md" "## User Stories"
+  assert_file_contains "$PROJECT_DIR/prd.md" "## Implementation Decisions"
+  assert_file_contains "$PROJECT_DIR/prd.md" "## Testing Decisions"
+  assert_file_contains "$PROJECT_DIR/plan.md" "# Plan: Specode Loop Example Acceptance Fixture"
+  assert_file_contains "$PROJECT_DIR/plan.md" "> Source PRD: prd.md"
+  assert_file_contains "$PROJECT_DIR/plan.md" "## Architectural decisions"
+  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] Phase 1: Artifact Status Trail"
+  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] Phase 2: Derived Summary"
+  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] Phase 3: Executable Verification"
+  assert_file_contains "$PROJECT_DIR/plan.md" "### Acceptance criteria"
+  assert_file_contains "$PROJECT_DIR/plan.md" "## Blocked by"
+  assert_file_exact "$PROJECT_DIR/artifact.txt" $'Specode Loop example task 1 complete.\nSpecode Loop example task 2 complete.'
+  assert_file_exact "$PROJECT_DIR/summary.md" $'# Specode Loop Example Summary\n\n- Task 1: Specode Loop example task 1 complete.\n- Task 2: Specode Loop example task 2 complete.'
+  assert_executable "$PROJECT_DIR/verify.sh"
+  assert_project_command_exact "Specode Loop example verified." "$PROJECT_DIR" ./verify.sh
+  assert_count "3" "$(count_file_matches '^## \[x\] Phase' "$PROJECT_DIR/plan.md")" "completed phase count"
+  assert_count "0" "$(count_file_matches '^## \[ \] Phase' "$PROJECT_DIR/plan.md")" "remaining unchecked phase count"
   [[ -d "$PROJECT_DIR/.agents/skills/specode-do-work" ]] || fail "project-local specode-do-work skill was not copied"
   assert_file_contains "$PROJECT_DIR/.agents/skills/specode-do-work/SKILL.md" "name: specode-do-work"
   assert_path_missing "$PROJECT_DIR/.codex/skills/do-work"
   assert_file_contains "$PROJECT_DIR/specode_loop.log" "Bundled workflow skill synced: specode-do-work:$PROJECT_DIR/.agents/skills/specode-do-work"
-  assert_file_contains "$PROJECT_DIR/specode_loop.log" "TASK DONE sentinel detected"
+  assert_count "3" "$(count_file_matches "TASK DONE sentinel detected" "$PROJECT_DIR/specode_loop.log")" "TASK DONE sentinel count"
   assert_file_contains "$PROJECT_DIR/specode_loop.log" "ALL TASKS DONE sentinel detected"
 
   if [[ -d "$PROJECT_DIR/.git" ]]; then

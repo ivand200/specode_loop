@@ -71,6 +71,32 @@ assert_file_not_contains() {
   fi
 }
 
+assert_file_missing_or_not_contains() {
+  local file="$1"
+  local needle="$2"
+
+  if [[ -e "$file" ]]; then
+    assert_file_not_contains "$file" "$needle"
+  fi
+}
+
+assert_no_sandbox_failure_diagnostics() {
+  local log_file="${1:-}"
+
+  assert_file_not_contains "$CURRENT_TEST_DIR/stdout" "Sandbox iteration failed without a success sentinel." || return 1
+  assert_file_not_contains "$CURRENT_TEST_DIR/stderr" "Sandbox iteration failed without a success sentinel." || return 1
+  assert_file_not_contains "$CURRENT_TEST_DIR/stdout" "Last 30 captured output lines:" || return 1
+  assert_file_not_contains "$CURRENT_TEST_DIR/stderr" "Last 30 captured output lines:" || return 1
+  assert_file_not_contains "$CURRENT_TEST_DIR/stdout" "For the full raw transcript, rerun with SPECODE_LOOP_VERBOSE=1." || return 1
+  assert_file_not_contains "$CURRENT_TEST_DIR/stderr" "For the full raw transcript, rerun with SPECODE_LOOP_VERBOSE=1." || return 1
+
+  if [[ -n "$log_file" ]]; then
+    assert_file_missing_or_not_contains "$log_file" "Sandbox iteration failed without a success sentinel." || return 1
+    assert_file_missing_or_not_contains "$log_file" "Last 30 captured output lines:" || return 1
+    assert_file_missing_or_not_contains "$log_file" "For the full raw transcript, rerun with SPECODE_LOOP_VERBOSE=1." || return 1
+  fi
+}
+
 assert_path_exists() {
   local path="$1"
 
@@ -108,9 +134,13 @@ assert_equals() {
   fi
 }
 
+assert_temp_outputs_cleaned() {
+  assert_no_paths_matching "$CURRENT_TEST_DIR/tmp/specode_loop.*" || return 1
+}
+
 make_test_dir() {
   CURRENT_TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/specode_loop-test.XXXXXX")"
-  mkdir -p "$CURRENT_TEST_DIR/bin" "$CURRENT_TEST_DIR/codex-home/skills/do-work" "$CURRENT_TEST_DIR/scenarios"
+  mkdir -p "$CURRENT_TEST_DIR/bin" "$CURRENT_TEST_DIR/codex-home/skills/do-work" "$CURRENT_TEST_DIR/scenarios" "$CURRENT_TEST_DIR/tmp"
   printf 'global skill\n' >"$CURRENT_TEST_DIR/codex-home/skills/do-work/SKILL.md"
   mkdir -p "$CURRENT_TEST_DIR/codex-home/skills/do-work/references"
   printf 'reference asset\n' >"$CURRENT_TEST_DIR/codex-home/skills/do-work/references/workflow.txt"
@@ -199,6 +229,9 @@ case "$cmd" in
     ;;
   rm)
     printf 'rm|%s\n' "${1:-}" >>"$FAKE_SBX_DIR/rm.log"
+    if [[ -f "$FAKE_SBX_DIR/rm.status" ]]; then
+      exit "$(cat "$FAKE_SBX_DIR/rm.status")"
+    fi
     exit 0
     ;;
   *)
@@ -244,6 +277,12 @@ interrupt_scenario() {
   printf 'interrupt\n' >"$CURRENT_TEST_DIR/scenarios/run_${run_number}.interrupt"
 }
 
+cleanup_failure() {
+  local status="$1"
+
+  printf '%s\n' "$status" >"$CURRENT_TEST_DIR/scenarios/rm.status"
+}
+
 run_loop() {
   local project="$1"
   shift
@@ -261,6 +300,7 @@ run_loop_with_runner() {
     PATH="$CURRENT_TEST_DIR/bin:$PATH" \
       FAKE_SBX_DIR="$CURRENT_TEST_DIR/scenarios" \
       SPECODE_LOOP_VERBOSE="${SPECODE_LOOP_VERBOSE:-}" \
+      TMPDIR="$CURRENT_TEST_DIR/tmp" \
       bash "$runner" "$project" "$@"
   ) >"$CURRENT_TEST_DIR/stdout" 2>"$CURRENT_TEST_DIR/stderr"
 }
@@ -288,6 +328,8 @@ test_missing_documents_and_max_validation() {
   status=$?
   assert_failure "$status" || return 1
   assert_file_contains "$CURRENT_TEST_DIR/stderr" "required PRD file is missing" || return 1
+  assert_no_sandbox_failure_diagnostics "$project/specode_loop.log" || return 1
+  assert_path_missing "$CURRENT_TEST_DIR/scenarios/calls.log" || return 1
 
   project="$CURRENT_TEST_DIR/missing-plan"
   mkdir -p "$project"
@@ -296,18 +338,32 @@ test_missing_documents_and_max_validation() {
   status=$?
   assert_failure "$status" || return 1
   assert_file_contains "$CURRENT_TEST_DIR/stderr" "required plan file is missing" || return 1
+  assert_no_sandbox_failure_diagnostics "$project/specode_loop.log" || return 1
+  assert_path_missing "$CURRENT_TEST_DIR/scenarios/calls.log" || return 1
 
   project="$(make_project invalid-max)"
   run_loop "$project" --max-iterations 0
   status=$?
   assert_failure "$status" || return 1
   assert_file_contains "$CURRENT_TEST_DIR/stderr" "--max-iterations must be a positive integer" || return 1
+  assert_no_sandbox_failure_diagnostics "$project/specode_loop.log" || return 1
+  assert_path_missing "$CURRENT_TEST_DIR/scenarios/calls.log" || return 1
 
   project="$(make_project invalid-effort)"
   run_loop "$project" --effort enormous
   status=$?
   assert_failure "$status" || return 1
   assert_file_contains "$CURRENT_TEST_DIR/stderr" "--effort must be one of: minimal, low, medium, high, xhigh" || return 1
+  assert_no_sandbox_failure_diagnostics "$project/specode_loop.log" || return 1
+  assert_path_missing "$CURRENT_TEST_DIR/scenarios/calls.log" || return 1
+
+  project="$(make_project unknown-arg)"
+  run_loop "$project" --unexpected-option
+  status=$?
+  assert_failure "$status" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stderr" "unknown argument: --unexpected-option" || return 1
+  assert_no_sandbox_failure_diagnostics "$project/specode_loop.log" || return 1
+  assert_path_missing "$CURRENT_TEST_DIR/scenarios/calls.log" || return 1
 }
 
 test_skill_copy_and_overwrite() {
@@ -392,6 +448,7 @@ test_missing_bundled_skill_fails_before_sandbox() {
   assert_failure "$status" || return 1
   assert_file_contains "$CURRENT_TEST_DIR/stderr" "bundled workflow skill directory is missing" || return 1
   assert_file_contains "$CURRENT_TEST_DIR/stderr" "isolated-runner/.agents/skills/specode-do-work" || return 1
+  assert_no_sandbox_failure_diagnostics "$project/specode_loop.log" || return 1
   assert_path_missing "$CURRENT_TEST_DIR/scenarios/calls.log" || return 1
 }
 
@@ -430,8 +487,11 @@ test_exact_sentinels_and_nonzero_override() {
   assert_success "$status" || return 1
   assert_file_contains "$project/specode_loop.log" "TASK DONE sentinel detected; iteration successful (command exit code: 42)" || return 1
   assert_file_contains "$project/specode_loop.log" "ALL TASKS DONE sentinel detected; overall run complete (command exit code: 42)" || return 1
+  assert_file_contains "$project/specode_loop.log" "Sandbox cleanup: removed sandbox specode-loop-sentinel-flow-" || return 1
+  assert_file_not_contains "$CURRENT_TEST_DIR/stdout" "Sandbox cleanup:" || return 1
   assert_file_contains "$CURRENT_TEST_DIR/scenarios/rm.log" "rm|specode-loop-sentinel-flow-" || return 1
   assert_equals "2" "$(wc -l <"$CURRENT_TEST_DIR/scenarios/rm.log" | tr -d ' ')" || return 1
+  assert_temp_outputs_cleaned || return 1
 }
 
 test_last_message_sentinel_detection() {
@@ -485,6 +545,33 @@ test_verbose_log_includes_raw_transcript() {
   assert_file_contains "$project/specode_loop.log" "Verbose transcript logging: 1" || return 1
   assert_file_contains "$project/specode_loop.log" "RAW TRANSCRIPT: .codex/skills/do-work/SKILL.md" || return 1
   assert_file_contains "$project/specode_loop.log" "ALL TASKS DONE sentinel detected" || return 1
+  assert_temp_outputs_cleaned || return 1
+}
+
+test_verbose_no_sentinel_failure_keeps_raw_transcript_and_summary() {
+  local project status output_lines line
+
+  project="$(make_project verbose-failure)"
+  output_lines=""
+  for line in $(seq 1 35); do
+    output_lines="${output_lines}verbose failure line $(printf '%02d' "$line")"$'\n'
+  done
+  scenario 1 7 "${output_lines%$'\n'}"
+
+  SPECODE_LOOP_VERBOSE=1 run_loop "$project"
+  status=$?
+
+  assert_failure "$status" || return 1
+  assert_file_contains "$project/specode_loop.log" "Verbose transcript logging: 1" || return 1
+  assert_file_contains "$project/specode_loop.log" "verbose failure line 01" || return 1
+  assert_file_contains "$project/specode_loop.log" "verbose failure line 05" || return 1
+  assert_file_contains "$project/specode_loop.log" "verbose failure line 35" || return 1
+  assert_file_contains "$project/specode_loop.log" "Sandbox iteration failed without a success sentinel." || return 1
+  assert_file_contains "$project/specode_loop.log" "Last 30 captured output lines:" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Sandbox iteration failed without a success sentinel." || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Sandbox cleanup: removed sandbox specode-loop-verbose-failure-" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/scenarios/rm.log" "rm|specode-loop-verbose-failure-" || return 1
+  assert_temp_outputs_cleaned || return 1
 }
 
 test_false_positive_sentinel_text_fails() {
@@ -502,17 +589,65 @@ test_false_positive_sentinel_text_fails() {
 }
 
 test_no_sentinel_failure_and_cleanup() {
-  local project status
+  local project status output_lines line
 
   project="$(make_project no-sentinel)"
-  scenario 1 0 "ordinary output"
+  output_lines=""
+  for line in $(seq 1 35); do
+    output_lines="${output_lines}agent output line $(printf '%02d' "$line")"$'\n'
+  done
+  scenario 1 7 "${output_lines%$'\n'}"
 
   run_loop "$project"
   status=$?
 
   assert_failure "$status" || return 1
   assert_file_contains "$project/specode_loop.log" "FAILED, no exact success sentinel detected" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Sandbox iteration failed without a success sentinel." || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Iteration: 1/10" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Sandbox: specode-loop-no-sentinel-" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Sandbox command exit code: 7" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Expected success sentinels:" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "- TASK DONE" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "- ALL TASKS DONE" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Project log: $project/specode_loop.log" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Last 30 captured output lines:" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "agent output line 06" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "agent output line 35" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "For the full raw transcript, rerun with SPECODE_LOOP_VERBOSE=1." || return 1
+  assert_file_contains "$project/specode_loop.log" "Sandbox iteration failed without a success sentinel." || return 1
+  assert_file_contains "$project/specode_loop.log" "Iteration: 1/10" || return 1
+  assert_file_contains "$project/specode_loop.log" "Sandbox command exit code: 7" || return 1
+  assert_file_contains "$project/specode_loop.log" "Project log: $project/specode_loop.log" || return 1
+  assert_file_contains "$project/specode_loop.log" "Last 30 captured output lines:" || return 1
+  assert_file_contains "$project/specode_loop.log" "agent output line 06" || return 1
+  assert_file_contains "$project/specode_loop.log" "agent output line 35" || return 1
+  assert_file_not_contains "$project/specode_loop.log" "agent output line 05" || return 1
+  assert_file_not_contains "$project/specode_loop.log" "agent output line 01" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Sandbox cleanup: removed sandbox specode-loop-no-sentinel-" || return 1
+  assert_file_contains "$project/specode_loop.log" "Sandbox cleanup: removed sandbox specode-loop-no-sentinel-" || return 1
   assert_file_contains "$CURRENT_TEST_DIR/scenarios/rm.log" "rm|specode-loop-no-sentinel-" || return 1
+  assert_temp_outputs_cleaned || return 1
+}
+
+test_failed_cleanup_preserves_iteration_failure() {
+  local project status
+
+  project="$(make_project failed-cleanup)"
+  scenario 1 7 "ordinary output without a sentinel"
+  cleanup_failure 23
+
+  run_loop "$project"
+  status=$?
+
+  assert_status 1 "$status" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Sandbox iteration failed without a success sentinel." || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Sandbox command exit code: 7" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Sandbox cleanup: failed to remove sandbox specode-loop-failed-cleanup-" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "(exit code: 23)" || return 1
+  assert_file_contains "$project/specode_loop.log" "Sandbox cleanup: failed to remove sandbox specode-loop-failed-cleanup-" || return 1
+  assert_file_contains "$project/specode_loop.log" "(exit code: 23)" || return 1
+  assert_temp_outputs_cleaned || return 1
 }
 
 test_interrupt_cleanup() {
@@ -526,7 +661,10 @@ test_interrupt_cleanup() {
 
   assert_status 130 "$status" || return 1
   assert_file_contains "$CURRENT_TEST_DIR/stderr" "Interrupted." || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Sandbox cleanup: removed sandbox specode-loop-interrupt-" || return 1
+  assert_file_contains "$project/specode_loop.log" "Sandbox cleanup: removed sandbox specode-loop-interrupt-" || return 1
   assert_file_contains "$CURRENT_TEST_DIR/scenarios/rm.log" "rm|specode-loop-interrupt-" || return 1
+  assert_temp_outputs_cleaned || return 1
 }
 
 test_max_iteration_failure() {
@@ -540,8 +678,21 @@ test_max_iteration_failure() {
   status=$?
 
   assert_failure "$status" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Specode Loop stopped at the maximum iteration cap." || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Configured maximum iterations reached: 2" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "ALL TASKS DONE was not observed." || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stdout" "Project log: $project/specode_loop.log" || return 1
+  assert_file_not_contains "$CURRENT_TEST_DIR/stdout" "Sandbox iteration failed without a success sentinel." || return 1
+  assert_file_not_contains "$CURRENT_TEST_DIR/stdout" "Last 30 captured output lines:" || return 1
   assert_file_contains "$project/specode_loop.log" "reached max iterations (2) before ALL TASKS DONE" || return 1
+  assert_file_contains "$project/specode_loop.log" "Specode Loop stopped at the maximum iteration cap." || return 1
+  assert_file_contains "$project/specode_loop.log" "Configured maximum iterations reached: 2" || return 1
+  assert_file_contains "$project/specode_loop.log" "ALL TASKS DONE was not observed." || return 1
+  assert_file_contains "$project/specode_loop.log" "Project log: $project/specode_loop.log" || return 1
+  assert_file_not_contains "$project/specode_loop.log" "Sandbox iteration failed without a success sentinel." || return 1
+  assert_file_not_contains "$project/specode_loop.log" "Last 30 captured output lines:" || return 1
   assert_equals "2" "$(wc -l <"$CURRENT_TEST_DIR/scenarios/rm.log" | tr -d ' ')" || return 1
+  assert_temp_outputs_cleaned || return 1
 }
 
 test_direct_mode_and_prompt_contract() {
@@ -556,13 +707,16 @@ test_direct_mode_and_prompt_contract() {
   assert_success "$status" || return 1
   assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "run|specode-loop-prompt-contract-" || return 1
   assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "codex $project -- exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C $project -m test-model -c model_reasoning_effort=\"high\" -o $project/.specode_loop-last-message." || return 1
-  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Use the project-local specode-do-work skill for this task." || return 1
-  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Treat .agents/skills/specode-do-work as runner-managed configuration copied in by Specode Loop." || return 1
-  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Do not modify .agents/skills/specode-do-work as part of task work." || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Use the project-local specode-do-work skill." || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Work on AFK Phases only. Do not work on HITL Phases." || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Select exactly one undone AFK Phase in plan.md for this run." || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "If no undone AFK Phases remain, output exactly:" || return 1
+  assert_file_not_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "runner-managed configuration copied in by Specode Loop" || return 1
+  assert_file_not_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Do not modify .agents/skills/specode-do-work as part of task work." || return 1
   assert_file_not_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "project-local do-work skill" || return 1
   assert_file_not_contains "$CURRENT_TEST_DIR/scenarios/calls.log" ".codex/skills/do-work" || return 1
-  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Do not make a git commit unless prd.md or plan.md explicitly requires it." || return 1
-  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Select exactly first one undone Markdown checkbox task in plan.md for this run." || return 1
+  assert_file_not_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Do not make a git commit unless prd.md or plan.md explicitly requires it." || return 1
+  assert_file_not_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Work directly in the project working tree" || return 1
   assert_file_contains "$project/specode_loop.log" "Model: test-model" || return 1
   assert_file_contains "$project/specode_loop.log" "Reasoning effort: high" || return 1
 }
@@ -603,8 +757,10 @@ run_case "exact sentinels override nonzero sandbox status" test_exact_sentinels_
 run_case "last-message sentinels are detected" test_last_message_sentinel_detection
 run_case "concise logs omit raw transcript by default" test_concise_log_omits_raw_transcript_by_default
 run_case "verbose logs include raw transcript" test_verbose_log_includes_raw_transcript
+run_case "verbose no-sentinel failure keeps raw transcript and summary" test_verbose_no_sentinel_failure_keeps_raw_transcript_and_summary
 run_case "false-positive sentinel text fails" test_false_positive_sentinel_text_fails
 run_case "no-sentinel output fails and cleans up" test_no_sentinel_failure_and_cleanup
+run_case "failed cleanup preserves original iteration failure" test_failed_cleanup_preserves_iteration_failure
 run_case "interrupt cleans up active sandbox" test_interrupt_cleanup
 run_case "max iterations fail before all tasks done" test_max_iteration_failure
 run_case "direct-mode command and prompt contract" test_direct_mode_and_prompt_contract

@@ -3,7 +3,7 @@
 .env.*
 !.env.example
 
-# Local Codex/runner state copied into target projects
+# Local Codex state
 .codex/
 specode_loop.log
 .specode_loop-last-message.*
@@ -15,6 +15,9 @@ specode_loop.log
 /prd.md
 /plan.md
 /fixtures/
+/plans
+/prd
+/tasks
 
 # OS and editor noise
 .DS_Store

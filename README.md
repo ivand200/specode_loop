@@ -15,7 +15,7 @@ Each sandboxed Codex run must complete exactly the first undone checkbox task, m
 
 ## Quick Start
 
-Create a disposable copy of the example target project:
+Create a disposable copy of the multi-step example target project:
 
 ```bash
 DEMO_PROJECT="$(mktemp -d "${TMPDIR:-/tmp}/specode-loop-demo.XXXXXX")"
@@ -28,6 +28,9 @@ Use a specific model or reasoning effort when you want to override your Codex de
 ```bash
 scripts/specode_loop.sh "$DEMO_PROJECT" --model YOUR_CODEX_MODEL --reasoning-effort medium
 ```
+
+The example completes three deterministic plan phases, then stops after the
+runner observes `ALL TASKS DONE`.
 
 Verbose transcript logging:
 
@@ -208,7 +211,8 @@ Regression tests use a fake `sbx` and do not launch a real sandbox:
 bash tests/specode_loop-regression.sh
 ```
 
-The real e2e test launches Docker Sandbox and Codex:
+The real e2e test launches Docker Sandbox and Codex against a copy of
+`examples/basic`:
 
 ```bash
 unset OPENAI_API_KEY CODEX_API_KEY

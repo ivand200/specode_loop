@@ -8,13 +8,13 @@ MODEL_REASONING_EFFORT=""
 SPECODE_LOOP_VERBOSE="${SPECODE_LOOP_VERBOSE:-0}"
 RUNNER_SKILLS_REL=".agents/skills"
 SPECODE_WORKFLOW_SKILL="specode-do-work"
-PROJECT_WORKFLOW_SKILL_REL="$RUNNER_SKILLS_REL/$SPECODE_WORKFLOW_SKILL"
 SPECODE_REQUIRED_SKILLS=(specode-do-work)
 ACTIVE_SANDBOX=""
 TEMP_OUTPUT=""
 LAST_MESSAGE_OUTPUT=""
 LOG_FILE=""
 LAST_SENTINEL=""
+FAILURE_EXCERPT_LINES=30
 
 TASK_DONE_SENTINEL="TASK DONE"
 ALL_TASKS_DONE_SENTINEL="ALL TASKS DONE"
@@ -49,6 +49,23 @@ warn() {
 
 log_line() {
   printf '%s\n' "$*" | tee -a "$LOG_FILE"
+}
+
+append_log_line() {
+  if [[ -n "$LOG_FILE" ]]; then
+    printf '%s\n' "$*" >>"$LOG_FILE"
+  fi
+}
+
+report_cleanup_line() {
+  local print_to_terminal="$1"
+  local message="$2"
+
+  if [[ "$print_to_terminal" == "1" ]]; then
+    log_line "$message"
+  else
+    append_log_line "$message"
+  fi
 }
 
 is_verbose_log() {
@@ -94,12 +111,24 @@ new_sandbox_name() {
 }
 
 cleanup_active_sandbox() {
+  local print_to_terminal="${1:-0}"
+  local report_no_active="${2:-0}"
+  local sandbox_name
+  local cleanup_status
+  local cleanup_exit_code
+
   if [[ -n "$ACTIVE_SANDBOX" ]]; then
-    if [[ -n "$LOG_FILE" ]]; then
-      log_line "Removing sandbox: $ACTIVE_SANDBOX"
+    sandbox_name="$ACTIVE_SANDBOX"
+    if sbx rm "$sandbox_name" >/dev/null 2>&1; then
+      cleanup_status="Sandbox cleanup: removed sandbox $sandbox_name."
+    else
+      cleanup_exit_code="$?"
+      cleanup_status="Sandbox cleanup: failed to remove sandbox $sandbox_name (exit code: $cleanup_exit_code)."
     fi
-    sbx rm "$ACTIVE_SANDBOX" >/dev/null 2>&1 || true
     ACTIVE_SANDBOX=""
+    report_cleanup_line "$print_to_terminal" "$cleanup_status"
+  elif [[ "$report_no_active" == "1" ]]; then
+    report_cleanup_line "$print_to_terminal" "Sandbox cleanup: no active sandbox to remove."
   fi
 }
 
@@ -195,31 +224,28 @@ sync_required_bundled_skills() {
 
 build_prompt() {
   cat <<EOF
-You are running inside a Docker Sandbox. The sandbox is the safety boundary, and this is a non-interactive automation run.
+You are running non-interactively inside Docker Sandbox.
 
 Project root:
 $PROJECT_DIR_ABS
 
-Project documents:
-- PRD: prd.md
-- Plan: plan.md
+Use the project-local $SPECODE_WORKFLOW_SKILL skill.
 
-Required workflow:
-- Use the project-local $SPECODE_WORKFLOW_SKILL skill for this task.
-- Treat $PROJECT_WORKFLOW_SKILL_REL as runner-managed configuration copied in by Specode Loop.
-- Do not modify $PROJECT_WORKFLOW_SKILL_REL as part of task work.
-- Read both project documents before choosing work.
-- Select exactly first one undone Markdown checkbox task in plan.md for this run.
-- Use the first undone task unless plan.md gives explicit priority rules.
-- If there are no undone tasks in plan.md, output exactly the full line "$ALL_TASKS_DONE_SENTINEL" and do no task work.
-- Complete only the selected task.
-- Mark the completed task done in plan.md by changing its checkbox from "- [ ]" to "- [x]".
-- Work directly in the project working tree; Docker Sandbox direct workspace mode makes those changes visible on the host.
-- Do not make a git commit unless prd.md or plan.md explicitly requires it.
-- When the selected task is complete and plan.md has been updated, output exactly the full line "$TASK_DONE_SENTINEL".
-- Do not output "$TASK_DONE_SENTINEL" unless the selected task is complete and plan.md was updated.
-- Do not output "$ALL_TASKS_DONE_SENTINEL" unless no undone checkbox tasks remain.
-- Blocked or incomplete work must not output a success sentinel.
+Read prd.md and plan.md before choosing work.
+
+Work on AFK Phases only. Do not work on HITL Phases.
+
+Select exactly one undone AFK Phase in plan.md for this run.
+Complete only the selected AFK Phase.
+Mark the completed AFK Phase done in plan.md by changing its checkbox from "[ ]" to "[x]".
+
+If no undone AFK Phases remain, output exactly:
+$ALL_TASKS_DONE_SENTINEL
+
+When the selected AFK Phase is complete and plan.md has been updated, output exactly:
+$TASK_DONE_SENTINEL
+
+Blocked or incomplete work must not output a success sentinel.
 EOF
 }
 
@@ -230,13 +256,51 @@ sentinel_detected() {
     { [[ -s "$LAST_MESSAGE_OUTPUT" ]] && grep -Fxq "$sentinel" "$LAST_MESSAGE_OUTPUT"; }
 }
 
+print_no_sentinel_failure_summary() {
+  local iteration="$1"
+  local command_status="$2"
+  local sandbox_name="$3"
+
+  {
+    printf '\n'
+    printf 'Sandbox iteration failed without a success sentinel.\n'
+    printf 'Iteration: %s/%s\n' "$iteration" "$MAX_ITERATIONS"
+    printf 'Sandbox: %s\n' "$sandbox_name"
+    printf 'Sandbox command exit code: %s\n' "$command_status"
+    printf 'Expected success sentinels:\n'
+    printf -- '- %s\n' "$TASK_DONE_SENTINEL"
+    printf -- '- %s\n' "$ALL_TASKS_DONE_SENTINEL"
+    printf 'Project log: %s\n' "$LOG_FILE"
+    printf 'Last %s captured output lines:\n' "$FAILURE_EXCERPT_LINES"
+    if [[ -s "$TEMP_OUTPUT" ]]; then
+      tail -n "$FAILURE_EXCERPT_LINES" "$TEMP_OUTPUT"
+    else
+      printf '(no output captured)\n'
+    fi
+    printf 'For the full raw transcript, rerun with SPECODE_LOOP_VERBOSE=1.\n'
+  } | tee -a "$LOG_FILE"
+}
+
+print_max_iteration_stop_summary() {
+  {
+    printf '\n'
+    printf 'Specode Loop stopped at the maximum iteration cap.\n'
+    printf 'Configured maximum iterations reached: %s\n' "$MAX_ITERATIONS"
+    printf 'Stop reason: reached max iterations (%s) before %s.\n' "$MAX_ITERATIONS" "$ALL_TASKS_DONE_SENTINEL"
+    printf '%s was not observed.\n' "$ALL_TASKS_DONE_SENTINEL"
+    printf 'Project log: %s\n' "$LOG_FILE"
+  } | tee -a "$LOG_FILE"
+}
+
 run_single_task_iteration() {
   local iteration="$1"
   local -a codex_args
   local command_status
+  local sandbox_name
 
   LAST_SENTINEL=""
   ACTIVE_SANDBOX="$(new_sandbox_name "$iteration")"
+  sandbox_name="$ACTIVE_SANDBOX"
   TEMP_OUTPUT="$(mktemp "${TMPDIR:-/tmp}/specode_loop.${iteration}.XXXXXX")"
   LAST_MESSAGE_OUTPUT="$PROJECT_DIR_ABS/.specode_loop-last-message.${iteration}.$$"
   codex_args=(exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C "$PROJECT_DIR_ABS")
@@ -296,6 +360,7 @@ run_single_task_iteration() {
   fi
 
   log_line "===== iteration $iteration status: FAILED, no exact success sentinel detected (command exit code: $command_status) ====="
+  print_no_sentinel_failure_summary "$iteration" "$command_status" "$sandbox_name"
   LAST_SENTINEL="none"
   cleanup_temp_output
   return 1
@@ -411,12 +476,12 @@ else
   log_line "Reasoning effort: Codex/project default"
 fi
 
-trap 'printf "\nInterrupted.\n" >&2; cleanup_temp_output; cleanup_active_sandbox; exit 130' INT TERM
-trap 'cleanup_temp_output; cleanup_active_sandbox' EXIT
+trap 'printf "\nInterrupted.\n" >&2; cleanup_temp_output; cleanup_active_sandbox 1 1; exit 130' INT TERM
+trap 'cleanup_temp_output; cleanup_active_sandbox 0 0' EXIT
 
 for ((iteration = 1; iteration <= MAX_ITERATIONS; iteration++)); do
   if run_single_task_iteration "$iteration"; then
-    cleanup_active_sandbox
+    cleanup_active_sandbox 0 0
 
     if [[ "$LAST_SENTINEL" == "all" ]]; then
       exit 0
@@ -425,9 +490,9 @@ for ((iteration = 1; iteration <= MAX_ITERATIONS; iteration++)); do
     continue
   fi
 
-  cleanup_active_sandbox
+  cleanup_active_sandbox 1 0
   exit 1
 done
 
-log_line "===== loop stopped: reached max iterations ($MAX_ITERATIONS) before ALL TASKS DONE ====="
+print_max_iteration_stop_summary
 exit 1
