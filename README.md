@@ -58,6 +58,10 @@ Then verify a basic sandbox run:
 sbx run codex .
 ```
 
+No local `do-work` skill installation is required. Specode Loop ships its own
+`specode-do-work` workflow skill and copies that runner-managed skill into the
+target project before each sandbox run.
+
 For API-key billing instead, use Docker's OpenAI secret or environment variables intentionally:
 
 ```bash
@@ -96,6 +100,12 @@ Example:
 scripts/specode_loop.sh /path/to/project --max-iterations 10 --model YOUR_CODEX_MODEL --reasoning-effort medium
 ```
 
+Before the first sandbox iteration, the runner syncs each required bundled
+workflow skill from this repository into the target project's project-level
+agent configuration. The initial required skill is copied from
+`.agents/skills/specode-do-work` to
+`PROJECT_DIR/.agents/skills/specode-do-work`.
+
 ## Script Defaults
 
 The runner starts with these defaults in `scripts/specode_loop.sh`:
@@ -116,7 +126,6 @@ An empty `MODEL` means Codex uses its project/config/default model. An empty `MO
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SPECODE_LOOP_VERBOSE` | `0` | Set to `1` to append the raw Docker Sandbox/Codex transcript to `specode_loop.log`. Default logs stay concise. |
-| `CODEX_HOME` | `$HOME/.codex` | Optional Codex home. Specode Loop copies `$CODEX_HOME/skills/do-work` into the project before running. |
 | `OPENAI_API_KEY` | unset | Optional API-key auth path. Unset this when using subscription OAuth to avoid API billing. |
 | `CODEX_API_KEY` | unset | Optional Codex/OpenAI API-key auth path. Unset this when using subscription OAuth. |
 | `OPENAI_BASE_URL` | unset | Optional OpenAI-compatible base URL used by Codex/OpenAI tooling when configured. Present in `.env.example`. |
@@ -125,10 +134,9 @@ An empty `MODEL` means Codex uses its project/config/default model. An empty `MO
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `SPECODE_LOOP_E2E_ENV` | `./.env` | Env file loaded by `tests/specode_loop-e2e.sh`. |
+| `SPECODE_LOOP_E2E_ENV` | unset | Optional env file loaded by `tests/specode_loop-e2e.sh`. Leave unset when using Docker Sandbox OAuth. |
 | `SPECODE_LOOP_E2E_KEEP` | `0` | Set to `1` to keep the temporary e2e project for inspection. |
-| `SPECODE_LOOP_E2E_MODEL` | unset | Model used by the real e2e test. Takes precedence over `CHAT_MODEL`. |
-| `CHAT_MODEL` | unset | Fallback model used by the real e2e test if `SPECODE_LOOP_E2E_MODEL` is unset. |
+| `SPECODE_LOOP_E2E_MODEL` | unset | Optional model used by the real e2e test. Leave unset to use Codex's project/config/default model. |
 
 ### Mentioned But Not Active
 
@@ -144,7 +152,7 @@ Default logs include:
 
 - preflight summary
 - project paths
-- copied `do-work` skill summary
+- synced `specode-do-work` bundled workflow skill path
 - model and reasoning effort
 - iteration start/end
 - sentinel detection
@@ -165,6 +173,12 @@ SPECODE_LOOP_VERBOSE=1 scripts/specode_loop.sh /path/to/project
 ├── README.md
 ├── .env.example
 ├── .gitignore
+├── .agents/
+│   └── skills/
+│       └── specode-do-work/
+│           ├── SKILL.md
+│           └── references/
+│               └── workflow.txt
 ├── examples/
 │   └── basic/
 │       ├── prd.md
@@ -184,7 +198,7 @@ SPECODE_LOOP_VERBOSE=1 scripts/specode_loop.sh /path/to/project
     └── specode_loop-regression.sh
 ```
 
-Root-level `prd.md`, `plan.md`, `idea.md`, `prompt.md`, copied `.codex/` skill state, logs, secrets, and generated root `fixtures/` are intentionally ignored as local working files.
+Root-level `prd.md`, `plan.md`, `idea.md`, `prompt.md`, `.codex/` local Codex state, logs, secrets, and generated root `fixtures/` are intentionally ignored as local working files. The repository-owned bundled workflow skill lives under `.agents/skills/specode-do-work`.
 
 ## Tests
 

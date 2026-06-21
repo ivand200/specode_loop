@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNNER="$ROOT_DIR/scripts/specode_loop.sh"
-ENV_FILE="${SPECODE_LOOP_E2E_ENV:-$ROOT_DIR/.env}"
+ENV_FILE="${SPECODE_LOOP_E2E_ENV:-}"
 PROJECT_DIR=""
 
 log() {
@@ -26,7 +26,7 @@ cleanup() {
 }
 
 load_env() {
-  if [[ -f "$ENV_FILE" ]]; then
+  if [[ -n "$ENV_FILE" && -f "$ENV_FILE" ]]; then
     set -a
     # shellcheck disable=SC1090
     source "$ENV_FILE"
@@ -41,6 +41,16 @@ assert_file_contains() {
   grep -Fq -- "$needle" "$file" || fail "expected $file to contain: $needle"
 }
 
+assert_file_exact() {
+  local file="$1"
+  local expected="$2"
+  local actual
+
+  [[ -f "$file" ]] || fail "expected file to exist: $file"
+  actual="$(cat "$file")"
+  [[ "$actual" == "$expected" ]] || fail "expected $file to contain exactly: $expected"
+}
+
 assert_file_missing_or_empty() {
   local file="$1"
 
@@ -49,8 +59,17 @@ assert_file_missing_or_empty() {
   fi
 }
 
+assert_path_missing() {
+  local path="$1"
+
+  if [[ -e "$path" ]]; then
+    fail "expected path to be absent: $path"
+  fi
+}
+
 make_project() {
   PROJECT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/specode_loop-e2e.XXXXXX")"
+  PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
 
   cat >"$PROJECT_DIR/prd.md" <<'EOF'
 # Specode Loop Real E2E PRD
@@ -91,16 +110,20 @@ main() {
   log "E2E project: $PROJECT_DIR"
 
   args=("$PROJECT_DIR" --max-iterations 2)
-  if [[ -n "${SPECODE_LOOP_E2E_MODEL:-${CHAT_MODEL:-}}" ]]; then
-    args+=(--model "${SPECODE_LOOP_E2E_MODEL:-${CHAT_MODEL:-}}")
+  if [[ -n "${SPECODE_LOOP_E2E_MODEL:-}" ]]; then
+    args+=(--model "$SPECODE_LOOP_E2E_MODEL")
   fi
 
-  bash "$RUNNER" "${args[@]}"
+  if ! bash "$RUNNER" "${args[@]}"; then
+    fail "runner exited before completing the e2e task"
+  fi
 
-  [[ -f "$PROJECT_DIR/artifact.txt" ]] || fail "artifact.txt was not created"
-  assert_file_contains "$PROJECT_DIR/artifact.txt" "Specode Loop real sandbox smoke test passed."
+  assert_file_exact "$PROJECT_DIR/artifact.txt" "Specode Loop real sandbox smoke test passed."
   assert_file_contains "$PROJECT_DIR/plan.md" "- [x] Create \`artifact.txt\`"
-  [[ -d "$PROJECT_DIR/.codex/skills/do-work" ]] || fail "project-local do-work skill was not copied"
+  [[ -d "$PROJECT_DIR/.agents/skills/specode-do-work" ]] || fail "project-local specode-do-work skill was not copied"
+  assert_file_contains "$PROJECT_DIR/.agents/skills/specode-do-work/SKILL.md" "name: specode-do-work"
+  assert_path_missing "$PROJECT_DIR/.codex/skills/do-work"
+  assert_file_contains "$PROJECT_DIR/specode_loop.log" "Bundled workflow skill synced: specode-do-work:$PROJECT_DIR/.agents/skills/specode-do-work"
   assert_file_contains "$PROJECT_DIR/specode_loop.log" "TASK DONE sentinel detected"
   assert_file_contains "$PROJECT_DIR/specode_loop.log" "ALL TASKS DONE sentinel detected"
 

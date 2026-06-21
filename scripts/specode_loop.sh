@@ -6,7 +6,10 @@ MAX_ITERATIONS="10"
 MODEL=""
 MODEL_REASONING_EFFORT=""
 SPECODE_LOOP_VERBOSE="${SPECODE_LOOP_VERBOSE:-0}"
-PROJECT_DO_WORK_SKILL_REL=".codex/skills/do-work"
+RUNNER_SKILLS_REL=".agents/skills"
+SPECODE_WORKFLOW_SKILL="specode-do-work"
+PROJECT_WORKFLOW_SKILL_REL="$RUNNER_SKILLS_REL/$SPECODE_WORKFLOW_SKILL"
+SPECODE_REQUIRED_SKILLS=(specode-do-work)
 ACTIVE_SANDBOX=""
 TEMP_OUTPUT=""
 LAST_MESSAGE_OUTPUT=""
@@ -75,11 +78,19 @@ new_sandbox_name() {
   local iteration="$1"
   local project_name
   local run_stamp
+  local max_project_name_len=20
 
   project_name="$(sanitize_name_part "$(basename "$PROJECT_DIR_ABS")")"
+  if [[ "${#project_name}" -gt "$max_project_name_len" ]]; then
+    project_name="${project_name:0:$max_project_name_len}"
+    project_name="${project_name%-}"
+  fi
+  if [[ -z "$project_name" ]]; then
+    project_name="project"
+  fi
   run_stamp="$(date '+%Y%m%d-%H%M%S')"
 
-  printf 'specode_loop-%s-%s-%02d-%s\n' "$project_name" "$run_stamp" "$iteration" "$$"
+  printf 'specode-loop-%s-%s-%02d-%s\n' "$project_name" "$run_stamp" "$iteration" "$$"
 }
 
 cleanup_active_sandbox() {
@@ -153,29 +164,33 @@ warn_for_existing_git_state() {
   fi
 }
 
-global_do_work_skill_path() {
-  local codex_home
-
-  if [[ -n "${CODEX_HOME:-}" ]]; then
-    codex_home="$CODEX_HOME"
-  else
-    codex_home="$HOME/.codex"
-  fi
-
-  printf '%s/skills/do-work\n' "$codex_home"
+runner_root() {
+  cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd
 }
 
-sync_do_work_skill() {
-  local source_dir="$1"
-  local target_dir="$PROJECT_DIR_ABS/$PROJECT_DO_WORK_SKILL_REL"
+sync_required_bundled_skills() {
+  local source_root="$1/$RUNNER_SKILLS_REL"
+  local target_root="$PROJECT_DIR_ABS/$RUNNER_SKILLS_REL"
+  local skill_name source_dir target_dir
   local target_parent
 
-  [[ -d "$source_dir" ]] || fail "global do-work skill directory is missing: $source_dir"
+  for skill_name in "${SPECODE_REQUIRED_SKILLS[@]}"; do
+    source_dir="$source_root/$skill_name"
+    target_dir="$target_root/$skill_name"
+    target_parent="$(dirname "$target_dir")"
 
-  target_parent="$(dirname "$target_dir")"
-  mkdir -p "$target_parent"
-  rm -rf "$target_dir"
-  cp -R "$source_dir" "$target_dir"
+    [[ -d "$source_dir" ]] || fail "bundled workflow skill directory is missing: $source_dir"
+
+    if [[ "$source_dir" == "$target_dir" ]]; then
+      SYNCED_BUNDLED_SKILLS+=("$skill_name:$target_dir")
+      continue
+    fi
+
+    mkdir -p "$target_parent"
+    rm -rf "$target_dir"
+    cp -R "$source_dir" "$target_dir"
+    SYNCED_BUNDLED_SKILLS+=("$skill_name:$target_dir")
+  done
 }
 
 build_prompt() {
@@ -190,9 +205,9 @@ Project documents:
 - Plan: plan.md
 
 Required workflow:
-- Use the project-local do-work skill for this task.
-- Treat $PROJECT_DO_WORK_SKILL_REL as runner configuration copied in by Specode Loop.
-- Do not modify $PROJECT_DO_WORK_SKILL_REL as part of task work.
+- Use the project-local $SPECODE_WORKFLOW_SKILL skill for this task.
+- Treat $PROJECT_WORKFLOW_SKILL_REL as runner-managed configuration copied in by Specode Loop.
+- Do not modify $PROJECT_WORKFLOW_SKILL_REL as part of task work.
 - Read both project documents before choosing work.
 - Select exactly first one undone Markdown checkbox task in plan.md for this run.
 - Use the first undone task unless plan.md gives explicit priority rules.
@@ -344,14 +359,15 @@ PROJECT_DIR_ABS="$(cd "$PROJECT_DIR" 2>/dev/null && pwd)" || fail "project direc
 PRD_ABS="$PROJECT_DIR_ABS/prd.md"
 PLAN_ABS="$PROJECT_DIR_ABS/plan.md"
 LOG_FILE="$PROJECT_DIR_ABS/specode_loop.log"
+RUNNER_ROOT="$(runner_root)"
+SYNCED_BUNDLED_SKILLS=()
 
 [[ -f "$PRD_ABS" ]] || fail "required PRD file is missing: $PRD_ABS"
 [[ -f "$PLAN_ABS" ]] || fail "required plan file is missing: $PLAN_ABS"
 
 warn_for_existing_git_state "$PROJECT_DIR_ABS"
 
-GLOBAL_DO_WORK_SKILL="$(global_do_work_skill_path)"
-sync_do_work_skill "$GLOBAL_DO_WORK_SKILL"
+sync_required_bundled_skills "$RUNNER_ROOT"
 PROMPT="$(build_prompt)"
 
 printf 'Specode Loop preflight passed.\n'
@@ -359,7 +375,9 @@ printf 'Project: %s\n' "$PROJECT_DIR_ABS"
 printf 'Workspace mode: direct (sandbox edits apply to this working tree)\n'
 printf 'PRD: %s\n' "$PRD_ABS"
 printf 'Plan: %s\n' "$PLAN_ABS"
-printf 'do-work skill: %s -> %s\n' "$GLOBAL_DO_WORK_SKILL" "$PROJECT_DIR_ABS/$PROJECT_DO_WORK_SKILL_REL"
+for synced_skill in "${SYNCED_BUNDLED_SKILLS[@]}"; do
+  printf 'Bundled workflow skill synced: %s\n' "$synced_skill"
+done
 printf 'Max iterations: %s\n' "$MAX_ITERATIONS"
 if [[ -n "$MODEL" ]]; then
   printf 'Model: %s\n' "$MODEL"
@@ -377,7 +395,9 @@ log_line "Project: $PROJECT_DIR_ABS"
 log_line "Workspace mode: direct (sandbox edits apply to this working tree)"
 log_line "PRD: $PRD_ABS"
 log_line "Plan: $PLAN_ABS"
-log_line "do-work skill synced into project-local runner config."
+for synced_skill in "${SYNCED_BUNDLED_SKILLS[@]}"; do
+  log_line "Bundled workflow skill synced: $synced_skill"
+done
 log_line "Verbose transcript logging: $SPECODE_LOOP_VERBOSE"
 log_line "Max iterations: $MAX_ITERATIONS"
 if [[ -n "$MODEL" ]]; then

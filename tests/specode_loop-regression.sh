@@ -151,6 +151,15 @@ case "$cmd" in
     printf '%s\n' "$count" >"$count_file"
     printf 'run|%s|%s\n' "$name" "$*" >>"$FAKE_SBX_DIR/calls.log"
 
+    if [[ "${1:-}" == "codex" && -n "${2:-}" ]]; then
+      skill_path="$2/.agents/skills/specode-do-work/SKILL.md"
+      if [[ -f "$skill_path" ]]; then
+        printf 'skill-before-run|%s|present\n' "$skill_path" >>"$FAKE_SBX_DIR/calls.log"
+      else
+        printf 'skill-before-run|%s|missing\n' "$skill_path" >>"$FAKE_SBX_DIR/calls.log"
+      fi
+    fi
+
     output_file="$FAKE_SBX_DIR/run_${count}.out"
     status_file="$FAKE_SBX_DIR/run_${count}.status"
     interrupt_file="$FAKE_SBX_DIR/run_${count}.interrupt"
@@ -239,12 +248,21 @@ run_loop() {
   local project="$1"
   shift
 
-  PATH="$CURRENT_TEST_DIR/bin:$PATH" \
-    CODEX_HOME="$CURRENT_TEST_DIR/codex-home" \
-    FAKE_SBX_DIR="$CURRENT_TEST_DIR/scenarios" \
-    SPECODE_LOOP_VERBOSE="${SPECODE_LOOP_VERBOSE:-}" \
-    bash "$RUNNER" "$project" "$@" \
-    >"$CURRENT_TEST_DIR/stdout" 2>"$CURRENT_TEST_DIR/stderr"
+  run_loop_with_runner "$RUNNER" "$project" "$@"
+}
+
+run_loop_with_runner() {
+  local runner="$1"
+  local project="$2"
+  shift 2
+
+  (
+    unset CODEX_HOME
+    PATH="$CURRENT_TEST_DIR/bin:$PATH" \
+      FAKE_SBX_DIR="$CURRENT_TEST_DIR/scenarios" \
+      SPECODE_LOOP_VERBOSE="${SPECODE_LOOP_VERBOSE:-}" \
+      bash "$runner" "$project" "$@"
+  ) >"$CURRENT_TEST_DIR/stdout" 2>"$CURRENT_TEST_DIR/stderr"
 }
 
 run_case() {
@@ -293,36 +311,87 @@ test_missing_documents_and_max_validation() {
 }
 
 test_skill_copy_and_overwrite() {
-  local project status copied_skill copied_reference
+  local project status copied_skill copied_reference unrelated_skill unrelated_agent_config
 
   project="$(make_project skill-copy)"
-  copied_skill="$project/.codex/skills/do-work/SKILL.md"
-  copied_reference="$project/.codex/skills/do-work/references/workflow.txt"
-  mkdir -p "$project/.codex/skills/do-work"
+  copied_skill="$project/.agents/skills/specode-do-work/SKILL.md"
+  copied_reference="$project/.agents/skills/specode-do-work/references/workflow.txt"
+  unrelated_skill="$project/.agents/skills/project-owned/SKILL.md"
+  unrelated_agent_config="$project/.agents/README.md"
+  mkdir -p "$project/.agents/skills/specode-do-work"
   printf 'stale local skill\n' >"$copied_skill"
+  mkdir -p "$project/.agents/skills/specode-do-work/stale-dir"
+  printf 'stale nested asset\n' >"$project/.agents/skills/specode-do-work/stale-dir/old.txt"
+  mkdir -p "$project/.agents/skills/project-owned"
+  printf 'project-owned skill\n' >"$unrelated_skill"
+  printf 'project-owned agent config\n' >"$unrelated_agent_config"
 
   scenario 1 0 "ALL TASKS DONE"
   run_loop "$project"
   status=$?
 
   assert_success "$status" || return 1
-  assert_file_contains "$copied_skill" "global skill" || return 1
+  assert_file_contains "$copied_skill" "name: specode-do-work" || return 1
   assert_file_not_contains "$copied_skill" "stale local skill" || return 1
-  assert_file_contains "$copied_reference" "reference asset" || return 1
-  assert_path_exists "$project/.codex/skills/do-work" || return 1
+  assert_file_contains "$copied_reference" "Specode Loop runner workflow" || return 1
+  assert_path_missing "$project/.agents/skills/specode-do-work/stale-dir/old.txt" || return 1
+  assert_file_contains "$unrelated_skill" "project-owned skill" || return 1
+  assert_file_contains "$unrelated_agent_config" "project-owned agent config" || return 1
+  assert_path_exists "$project/.agents/skills/specode-do-work" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "skill-before-run|$copied_skill|present" || return 1
 }
 
-test_missing_global_skill_fails_before_sandbox() {
+test_missing_global_skill_is_not_required() {
   local project status
 
   project="$(make_project missing-skill)"
   rm -rf "$CURRENT_TEST_DIR/codex-home/skills/do-work"
+  scenario 1 0 "ALL TASKS DONE"
 
   run_loop "$project"
   status=$?
 
+  assert_success "$status" || return 1
+  assert_path_exists "$CURRENT_TEST_DIR/scenarios/calls.log" || return 1
+  assert_file_contains "$project/specode_loop.log" "Bundled workflow skill synced: specode-do-work:$project/.agents/skills/specode-do-work" || return 1
+}
+
+test_codex_home_is_unset_for_normal_runs() {
+  local project status
+
+  project="$(make_project unset-codex-home)"
+  scenario 1 0 "ALL TASKS DONE"
+
+  run_loop "$project"
+  status=$?
+
+  assert_success "$status" || return 1
+  assert_path_exists "$CURRENT_TEST_DIR/scenarios/calls.log" || return 1
+  assert_file_contains "$project/specode_loop.log" "Bundled workflow skill synced: specode-do-work:$project/.agents/skills/specode-do-work" || return 1
+}
+
+test_runner_has_no_codex_home_skill_resolution() {
+  if grep -Eq 'CODEX_HOME|global_do_work_skill_path' "$RUNNER"; then
+    printf 'runner still references hidden user skill state\n' >&2
+    grep -En 'CODEX_HOME|global_do_work_skill_path' "$RUNNER" >&2 || true
+    return 1
+  fi
+}
+
+test_missing_bundled_skill_fails_before_sandbox() {
+  local project status isolated_runner
+
+  project="$(make_project missing-bundled-source)"
+  isolated_runner="$CURRENT_TEST_DIR/isolated-runner/scripts/specode_loop.sh"
+  mkdir -p "$(dirname "$isolated_runner")"
+  cp "$RUNNER" "$isolated_runner" || return 1
+
+  run_loop_with_runner "$isolated_runner" "$project"
+  status=$?
+
   assert_failure "$status" || return 1
-  assert_file_contains "$CURRENT_TEST_DIR/stderr" "global do-work skill directory is missing" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stderr" "bundled workflow skill directory is missing" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/stderr" "isolated-runner/.agents/skills/specode-do-work" || return 1
   assert_path_missing "$CURRENT_TEST_DIR/scenarios/calls.log" || return 1
 }
 
@@ -361,7 +430,7 @@ test_exact_sentinels_and_nonzero_override() {
   assert_success "$status" || return 1
   assert_file_contains "$project/specode_loop.log" "TASK DONE sentinel detected; iteration successful (command exit code: 42)" || return 1
   assert_file_contains "$project/specode_loop.log" "ALL TASKS DONE sentinel detected; overall run complete (command exit code: 42)" || return 1
-  assert_file_contains "$CURRENT_TEST_DIR/scenarios/rm.log" "rm|specode_loop-sentinel-flow-" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/scenarios/rm.log" "rm|specode-loop-sentinel-flow-" || return 1
   assert_equals "2" "$(wc -l <"$CURRENT_TEST_DIR/scenarios/rm.log" | tr -d ' ')" || return 1
 }
 
@@ -396,7 +465,7 @@ test_concise_log_omits_raw_transcript_by_default() {
 
   assert_success "$status" || return 1
   assert_file_contains "$project/specode_loop.log" "Verbose transcript logging: 0" || return 1
-  assert_file_contains "$project/specode_loop.log" "do-work skill synced into project-local runner config." || return 1
+  assert_file_contains "$project/specode_loop.log" "Bundled workflow skill synced: specode-do-work:$project/.agents/skills/specode-do-work" || return 1
   assert_file_contains "$project/specode_loop.log" "TASK DONE sentinel detected" || return 1
   assert_file_contains "$project/specode_loop.log" "ALL TASKS DONE sentinel detected" || return 1
   assert_file_not_contains "$project/specode_loop.log" "RAW TRANSCRIPT:" || return 1
@@ -429,7 +498,7 @@ test_false_positive_sentinel_text_fails() {
 
   assert_failure "$status" || return 1
   assert_file_contains "$project/specode_loop.log" "FAILED, no exact success sentinel detected" || return 1
-  assert_file_contains "$CURRENT_TEST_DIR/scenarios/rm.log" "rm|specode_loop-false-positive-" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/scenarios/rm.log" "rm|specode-loop-false-positive-" || return 1
 }
 
 test_no_sentinel_failure_and_cleanup() {
@@ -443,7 +512,7 @@ test_no_sentinel_failure_and_cleanup() {
 
   assert_failure "$status" || return 1
   assert_file_contains "$project/specode_loop.log" "FAILED, no exact success sentinel detected" || return 1
-  assert_file_contains "$CURRENT_TEST_DIR/scenarios/rm.log" "rm|specode_loop-no-sentinel-" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/scenarios/rm.log" "rm|specode-loop-no-sentinel-" || return 1
 }
 
 test_interrupt_cleanup() {
@@ -457,7 +526,7 @@ test_interrupt_cleanup() {
 
   assert_status 130 "$status" || return 1
   assert_file_contains "$CURRENT_TEST_DIR/stderr" "Interrupted." || return 1
-  assert_file_contains "$CURRENT_TEST_DIR/scenarios/rm.log" "rm|specode_loop-interrupt-" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/scenarios/rm.log" "rm|specode-loop-interrupt-" || return 1
 }
 
 test_max_iteration_failure() {
@@ -485,19 +554,50 @@ test_direct_mode_and_prompt_contract() {
   status=$?
 
   assert_success "$status" || return 1
-  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "run|specode_loop-prompt-contract-" || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "run|specode-loop-prompt-contract-" || return 1
   assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "codex $project -- exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C $project -m test-model -c model_reasoning_effort=\"high\" -o $project/.specode_loop-last-message." || return 1
-  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Use the project-local do-work skill for this task." || return 1
-  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Do not modify .codex/skills/do-work as part of task work." || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Use the project-local specode-do-work skill for this task." || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Treat .agents/skills/specode-do-work as runner-managed configuration copied in by Specode Loop." || return 1
+  assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Do not modify .agents/skills/specode-do-work as part of task work." || return 1
+  assert_file_not_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "project-local do-work skill" || return 1
+  assert_file_not_contains "$CURRENT_TEST_DIR/scenarios/calls.log" ".codex/skills/do-work" || return 1
   assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Do not make a git commit unless prd.md or plan.md explicitly requires it." || return 1
   assert_file_contains "$CURRENT_TEST_DIR/scenarios/calls.log" "Select exactly first one undone Markdown checkbox task in plan.md for this run." || return 1
   assert_file_contains "$project/specode_loop.log" "Model: test-model" || return 1
   assert_file_contains "$project/specode_loop.log" "Reasoning effort: high" || return 1
 }
 
+test_sandbox_names_are_hostname_safe() {
+  local project status sandbox_name
+
+  project="$(make_project fixture_name_with_underscores_and_extra_segments_abcdefghijklmnopqrstuvwxyz)"
+  scenario 1 0 "ALL TASKS DONE"
+
+  run_loop "$project"
+  status=$?
+
+  assert_success "$status" || return 1
+  sandbox_name="$(sed -n 's/^run|\([^|]*\)|.*/\1/p' "$CURRENT_TEST_DIR/scenarios/calls.log" | head -n 1)"
+  [[ -n "$sandbox_name" ]] || {
+    printf 'expected fake sbx call to include sandbox name\n' >&2
+    return 1
+  }
+  if [[ "${#sandbox_name}" -gt 63 ]]; then
+    printf 'expected sandbox name length <= 63, got %s: %s\n' "${#sandbox_name}" "$sandbox_name" >&2
+    return 1
+  fi
+  if [[ ! "$sandbox_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+    printf 'expected hostname-safe sandbox name, got: %s\n' "$sandbox_name" >&2
+    return 1
+  fi
+}
+
 run_case "missing documents and max validation" test_missing_documents_and_max_validation
 run_case "full do-work skill copy and overwrite" test_skill_copy_and_overwrite
-run_case "missing global skill fails before sandbox" test_missing_global_skill_fails_before_sandbox
+run_case "missing global skill is not required" test_missing_global_skill_is_not_required
+run_case "normal runs work with CODEX_HOME unset" test_codex_home_is_unset_for_normal_runs
+run_case "runner does not resolve CODEX_HOME skills" test_runner_has_no_codex_home_skill_resolution
+run_case "missing bundled skill fails before sandbox" test_missing_bundled_skill_fails_before_sandbox
 run_case "dirty git warnings continue" test_dirty_git_warning
 run_case "exact sentinels override nonzero sandbox status" test_exact_sentinels_and_nonzero_override
 run_case "last-message sentinels are detected" test_last_message_sentinel_detection
@@ -508,6 +608,7 @@ run_case "no-sentinel output fails and cleans up" test_no_sentinel_failure_and_c
 run_case "interrupt cleans up active sandbox" test_interrupt_cleanup
 run_case "max iterations fail before all tasks done" test_max_iteration_failure
 run_case "direct-mode command and prompt contract" test_direct_mode_and_prompt_contract
+run_case "sandbox names stay hostname-safe" test_sandbox_names_are_hostname_safe
 
 printf '\n%s passed, %s failed\n' "$PASS_COUNT" "$FAIL_COUNT"
 
