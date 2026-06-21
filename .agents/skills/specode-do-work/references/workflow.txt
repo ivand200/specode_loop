@@ -1,0 +1,3 @@
+Specode Loop runner workflow reference.
+
+This file is intentionally small. It exists so regression tests can verify that bundled skill directories are copied recursively, including reference assets.
