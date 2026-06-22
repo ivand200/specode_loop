@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -6,14 +7,16 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 RUNNER = ROOT_DIR / "scripts" / "specode_loop.py"
+SPECODE_SKILL = ROOT_DIR / ".agents" / "skills" / "specode-do-work"
 
 
 def run_loop(
     project: Path | None = None,
     *args: str,
     path: str | None = None,
+    runner: Path = RUNNER,
 ) -> subprocess.CompletedProcess[str]:
-    command = [sys.executable, str(RUNNER)]
+    command = [sys.executable, str(runner)]
     if project is not None:
         command.append(str(project))
     command.extend(args)
@@ -113,6 +116,91 @@ def test_option_parsing_and_valid_preflight_do_not_execute_sandbox(tmp_path: Pat
     assert "Max iterations: 7" in result.stdout
     assert "Model: test-model" in result.stdout
     assert "Reasoning effort: medium" in result.stdout
+    assert_sandbox_not_called(calls_log)
+
+
+def test_bundled_skill_is_copied_and_owned_target_is_overwritten(tmp_path: Path, monkeypatch) -> None:
+    project = make_project(tmp_path)
+    path, calls_log = install_fake_sbx(tmp_path)
+    monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
+    copied_skill = project / ".agents" / "skills" / "specode-do-work" / "SKILL.md"
+    copied_reference = project / ".agents" / "skills" / "specode-do-work" / "references" / "workflow.txt"
+    stale_file = project / ".agents" / "skills" / "specode-do-work" / "stale-dir" / "old.txt"
+    unrelated_skill = project / ".agents" / "skills" / "project-owned" / "SKILL.md"
+    unrelated_agent_config = project / ".agents" / "README.md"
+
+    copied_skill.parent.mkdir(parents=True)
+    copied_skill.write_text("stale local skill\n", encoding="utf-8")
+    stale_file.parent.mkdir(parents=True)
+    stale_file.write_text("stale nested asset\n", encoding="utf-8")
+    unrelated_skill.parent.mkdir(parents=True)
+    unrelated_skill.write_text("project-owned skill\n", encoding="utf-8")
+    unrelated_agent_config.write_text("project-owned agent config\n", encoding="utf-8")
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 0
+    assert "Bundled workflow skill synced: specode-do-work:" in result.stdout
+    assert "name: specode-do-work" in copied_skill.read_text(encoding="utf-8")
+    assert "stale local skill" not in copied_skill.read_text(encoding="utf-8")
+    assert "Specode Loop runner workflow" in copied_reference.read_text(encoding="utf-8")
+    assert not stale_file.exists()
+    assert unrelated_skill.read_text(encoding="utf-8") == "project-owned skill\n"
+    assert unrelated_agent_config.read_text(encoding="utf-8") == "project-owned agent config\n"
+    assert_sandbox_not_called(calls_log)
+
+
+def test_missing_bundled_skill_source_fails_before_sandbox_execution(tmp_path: Path, monkeypatch) -> None:
+    project = make_project(tmp_path)
+    path, calls_log = install_fake_sbx(tmp_path)
+    monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
+    isolated_runner = tmp_path / "isolated-runner" / "scripts" / "specode_loop.py"
+    isolated_runner.parent.mkdir(parents=True)
+    shutil.copyfile(RUNNER, isolated_runner)
+
+    result = run_loop(project, path=path, runner=isolated_runner)
+
+    assert result.returncode == 1
+    assert "Error: bundled workflow skill directory is missing:" in result.stderr
+    assert "isolated-runner/.agents/skills/specode-do-work" in result.stderr
+    assert "Specode Loop preflight passed." not in result.stdout
+    assert_sandbox_not_called(calls_log)
+
+
+def test_dirty_git_state_warns_and_continues(tmp_path: Path, monkeypatch) -> None:
+    project = make_project(tmp_path)
+    path, calls_log = install_fake_sbx(tmp_path)
+    monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=project, check=True)
+    subprocess.run(["git", "add", "prd.md", "plan.md"], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=project, check=True)
+    (project / "prd.md").write_text("# PRD\n\nchanged\n", encoding="utf-8")
+    (project / "staged.txt").write_text("staged\n", encoding="utf-8")
+    subprocess.run(["git", "add", "staged.txt"], cwd=project, check=True)
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 0
+    assert f"Warning: {project} has existing unstaged changes. Continuing." in result.stderr
+    assert f"Warning: {project} has existing staged changes. Continuing." in result.stderr
+    assert "Specode Loop preflight passed." in result.stdout
+    assert_sandbox_not_called(calls_log)
+
+
+def test_hidden_user_skill_state_is_not_consulted(tmp_path: Path, monkeypatch) -> None:
+    project = make_project(tmp_path)
+    path, calls_log = install_fake_sbx(tmp_path)
+    monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-home"))
+
+    result = run_loop(project, path=path)
+
+    copied_skill = project / ".agents" / "skills" / "specode-do-work" / "SKILL.md"
+    assert result.returncode == 0
+    assert copied_skill.read_text(encoding="utf-8") == (SPECODE_SKILL / "SKILL.md").read_text(encoding="utf-8")
+    assert "Bundled workflow skill synced: specode-do-work:" in result.stdout
     assert_sandbox_not_called(calls_log)
 
 
