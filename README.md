@@ -20,13 +20,13 @@ Create a disposable copy of the multi-step example target project:
 ```bash
 DEMO_PROJECT="$(mktemp -d "${TMPDIR:-/tmp}/specode-loop-demo.XXXXXX")"
 cp -R examples/basic/. "$DEMO_PROJECT"
-scripts/specode_loop.sh "$DEMO_PROJECT"
+uv run python scripts/specode_loop.py "$DEMO_PROJECT"
 ```
 
 Use a specific model or reasoning effort when you want to override your Codex defaults:
 
 ```bash
-scripts/specode_loop.sh "$DEMO_PROJECT" --model YOUR_CODEX_MODEL --reasoning-effort medium
+uv run python scripts/specode_loop.py "$DEMO_PROJECT" --model YOUR_CODEX_MODEL --reasoning-effort medium
 ```
 
 The example completes three deterministic plan phases, then stops after the
@@ -35,10 +35,15 @@ runner observes `ALL TASKS DONE`.
 Verbose transcript logging:
 
 ```bash
-SPECODE_LOOP_VERBOSE=1 scripts/specode_loop.sh "$DEMO_PROJECT"
+SPECODE_LOOP_VERBOSE=1 uv run python scripts/specode_loop.py "$DEMO_PROJECT"
 ```
 
 The repository root is the source repo for Specode Loop. Target projects live in `examples/`, `tests/fixtures/`, or any external project directory that contains `prd.md` and `plan.md`.
+
+The Python runner is the transitional side-by-side port of the original shell
+runner. It is intended to replace the shell implementation after parity is
+proven, but the shell command remains present and documented during that
+transition.
 
 ## Setup
 
@@ -79,6 +84,14 @@ export OPENAI_API_KEY=...
 
 ## Usage
 
+Python port:
+
+```bash
+uv run python scripts/specode_loop.py PROJECT_DIR [options]
+```
+
+Shell runner:
+
 ```bash
 scripts/specode_loop.sh PROJECT_DIR [options]
 ```
@@ -98,6 +111,12 @@ minimal, low, medium, high, xhigh
 ```
 
 Example:
+
+```bash
+uv run python scripts/specode_loop.py /path/to/project --max-iterations 10 --model YOUR_CODEX_MODEL --reasoning-effort medium
+```
+
+Equivalent shell invocation:
 
 ```bash
 scripts/specode_loop.sh /path/to/project --max-iterations 10 --model YOUR_CODEX_MODEL --reasoning-effort medium
@@ -140,6 +159,10 @@ An empty `MODEL` means Codex uses its project/config/default model. An empty `MO
 | `SPECODE_LOOP_E2E_ENV` | unset | Optional env file loaded by `tests/specode_loop-e2e.sh`. Leave unset when using Docker Sandbox OAuth. |
 | `SPECODE_LOOP_E2E_KEEP` | `0` | Set to `1` to keep the temporary e2e project for inspection. |
 | `SPECODE_LOOP_E2E_MODEL` | unset | Optional model used by the real e2e test. Leave unset to use Codex's project/config/default model. |
+| `SPECODE_LOOP_PYTHON_E2E_ENV` | `SPECODE_LOOP_E2E_ENV` | Optional env file loaded by `tests/specode_loop_python-e2e.sh`. |
+| `SPECODE_LOOP_PYTHON_E2E_KEEP` | `0` | Set to `1` to keep the Python e2e project, stdout/stderr transcript, and log for inspection. |
+| `SPECODE_LOOP_KEEP_E2E_ARTIFACTS` | `0` | Alias accepted by the Python e2e script for keeping artifacts. |
+| `SPECODE_LOOP_PYTHON_E2E_MODEL` | `SPECODE_LOOP_E2E_MODEL` | Optional model used by the Python real e2e test. |
 
 ### Mentioned But Not Active
 
@@ -166,7 +189,7 @@ Default logs do not include the raw Codex transcript or full skill contents.
 Use verbose mode when debugging:
 
 ```bash
-SPECODE_LOOP_VERBOSE=1 scripts/specode_loop.sh /path/to/project
+SPECODE_LOOP_VERBOSE=1 uv run python scripts/specode_loop.py /path/to/project
 ```
 
 ## Repository Layout
@@ -191,12 +214,15 @@ SPECODE_LOOP_VERBOSE=1 scripts/specode_loop.sh /path/to/project
 ├── prd/
 │   └── specode_loop.md
 ├── scripts/
+│   ├── specode_loop.py
 │   └── specode_loop.sh
 └── tests/
     ├── fixtures/
     │   └── basic-project/
     │       ├── prd.md
     │       └── plan.md
+    ├── test_specode_loop_python.py
+    ├── specode_loop_python-e2e.sh
     ├── specode_loop-e2e.sh
     └── specode_loop-regression.sh
 ```
@@ -205,14 +231,45 @@ Root-level `prd.md`, `plan.md`, `idea.md`, `prompt.md`, `.codex/` local Codex st
 
 ## Tests
 
-Regression tests use a fake `sbx` and do not launch a real sandbox:
+The default Python regression suite uses a fake `sbx` and does not launch a
+real Docker Sandbox:
+
+```bash
+uv run pytest
+```
+
+The shell regression suite also uses a fake `sbx`:
 
 ```bash
 bash tests/specode_loop-regression.sh
 ```
 
-The real e2e test launches Docker Sandbox and Codex against a copy of
-`examples/basic`:
+Real e2e tests are optional and manual because they require `sbx`, Docker
+Sandbox OAuth, network access, and real Codex execution.
+
+Run the Python real e2e path against a copy of `examples/basic`:
+
+```bash
+unset OPENAI_API_KEY CODEX_API_KEY
+bash tests/specode_loop_python-e2e.sh
+```
+
+Keep the temporary Python e2e project, stdout/stderr transcript, and
+`specode_loop.log` for inspection:
+
+```bash
+SPECODE_LOOP_PYTHON_E2E_KEEP=1 bash tests/specode_loop_python-e2e.sh
+```
+
+`SPECODE_LOOP_KEEP_E2E_ARTIFACTS=1` is accepted as an alias.
+
+Use a specific Python e2e model:
+
+```bash
+SPECODE_LOOP_PYTHON_E2E_MODEL=YOUR_CODEX_MODEL bash tests/specode_loop_python-e2e.sh
+```
+
+Run the shell real e2e path:
 
 ```bash
 unset OPENAI_API_KEY CODEX_API_KEY
