@@ -1,14 +1,18 @@
 # Specode Loop
 
-Specode Loop runs Codex inside Docker Sandbox one plan task at a time.
+Specode Loop runs Codex inside Docker Sandbox one AFK plan phase at a time.
 
-It expects a project directory with:
+It operates on a Target Project with two Planning Document roles:
 
-- `prd.md`
-- `plan.md`
-- Markdown checkbox tasks in `plan.md`
+- a PRD document that describes requested behavior
+- a plan document that contains ordered Markdown checkbox phases
 
-Each sandboxed Codex run must complete exactly the first undone checkbox task, mark only that task as done, and print one exact sentinel line:
+By default, those documents are `prd.md` and `plan.md` in the Target Project.
+Use `--prd` and `--plan` when a project uses different filenames.
+
+Each sandboxed Codex run must complete exactly one eligible undone AFK phase in
+the selected plan document, mark only that phase as done, and print one exact
+sentinel line:
 
 - `TASK DONE`
 - `ALL TASKS DONE`
@@ -38,12 +42,11 @@ Verbose transcript logging:
 SPECODE_LOOP_VERBOSE=1 uv run python scripts/specode_loop.py "$DEMO_PROJECT"
 ```
 
-The repository root is the source repo for Specode Loop. Target projects live in `examples/`, `tests/fixtures/`, or any external project directory that contains `prd.md` and `plan.md`.
+The repository root is the source repo for Specode Loop. Target projects live in
+`examples/`, `tests/fixtures/`, or any external project directory that contains
+the selected PRD and plan documents.
 
-The Python runner is the transitional side-by-side port of the original shell
-runner. It is intended to replace the shell implementation after parity is
-proven, but the shell command remains present and documented during that
-transition.
+The Python runner is the supported Specode Loop command surface.
 
 ## Setup
 
@@ -84,20 +87,16 @@ export OPENAI_API_KEY=...
 
 ## Usage
 
-Python port:
+Python runner:
 
 ```bash
 uv run python scripts/specode_loop.py PROJECT_DIR [options]
 ```
 
-Shell runner:
-
-```bash
-scripts/specode_loop.sh PROJECT_DIR [options]
-```
-
 Options:
 
+- `--prd PATH`: PRD document path, resolved inside the Target Project. Default: `prd.md`.
+- `--plan PATH`: plan document path, resolved inside the Target Project. Default: `plan.md`.
 - `--max-iterations N`: maximum sandbox iterations. Default: `10`.
 - `--model MODEL`: Codex model for the run, passed to `codex exec -m`.
 - `--effort EFFORT`: reasoning effort.
@@ -116,11 +115,18 @@ Example:
 uv run python scripts/specode_loop.py /path/to/project --max-iterations 10 --model YOUR_CODEX_MODEL --reasoning-effort medium
 ```
 
-Equivalent shell invocation:
+Custom Planning Document names:
 
 ```bash
-scripts/specode_loop.sh /path/to/project --max-iterations 10 --model YOUR_CODEX_MODEL --reasoning-effort medium
+uv run python scripts/specode_loop.py /path/to/project --prd docs/product-requirements --plan planning/implementation.todo
 ```
+
+Planning Document paths follow the Target Project boundary:
+
+- Relative `--prd` and `--plan` values resolve from `PROJECT_DIR`, not from the caller's shell working directory.
+- Absolute `--prd` and `--plan` values are accepted only when they resolve inside `PROJECT_DIR`.
+- Symlinks are resolved before validation and are accepted only when their final target stays inside `PROJECT_DIR`.
+- Custom Planning Document filenames can use any extension, or no extension, as long as the selected files exist inside `PROJECT_DIR`.
 
 Before the first sandbox iteration, the runner syncs each required bundled
 workflow skill from this repository into the target project's project-level
@@ -130,14 +136,9 @@ agent configuration. The initial required skill is copied from
 
 ## Script Defaults
 
-The runner starts with these defaults in `scripts/specode_loop.sh`:
-
-```bash
-MAX_ITERATIONS="10"
-MODEL=""
-MODEL_REASONING_EFFORT=""
-SPECODE_LOOP_VERBOSE="${SPECODE_LOOP_VERBOSE:-0}"
-```
+The runner starts with `--max-iterations 10`, no explicit model, no explicit
+reasoning effort, `--prd prd.md`, `--plan plan.md`, and
+`SPECODE_LOOP_VERBOSE=0`.
 
 An empty `MODEL` means Codex uses its project/config/default model. An empty `MODEL_REASONING_EFFORT` means Codex uses its project/config/default reasoning effort.
 
@@ -156,13 +157,10 @@ An empty `MODEL` means Codex uses its project/config/default model. An empty `MO
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `SPECODE_LOOP_E2E_ENV` | unset | Optional env file loaded by `tests/specode_loop-e2e.sh`. Leave unset when using Docker Sandbox OAuth. |
-| `SPECODE_LOOP_E2E_KEEP` | `0` | Set to `1` to keep the temporary e2e project for inspection. |
-| `SPECODE_LOOP_E2E_MODEL` | unset | Optional model used by the real e2e test. Leave unset to use Codex's project/config/default model. |
-| `SPECODE_LOOP_PYTHON_E2E_ENV` | `SPECODE_LOOP_E2E_ENV` | Optional env file loaded by `tests/specode_loop_python-e2e.sh`. |
+| `SPECODE_LOOP_PYTHON_E2E_ENV` | unset | Optional env file loaded by `tests/specode_loop_python-e2e.sh`. |
 | `SPECODE_LOOP_PYTHON_E2E_KEEP` | `0` | Set to `1` to keep the Python e2e project, stdout/stderr transcript, and log for inspection. |
 | `SPECODE_LOOP_KEEP_E2E_ARTIFACTS` | `0` | Alias accepted by the Python e2e script for keeping artifacts. |
-| `SPECODE_LOOP_PYTHON_E2E_MODEL` | `SPECODE_LOOP_E2E_MODEL` | Optional model used by the Python real e2e test. |
+| `SPECODE_LOOP_PYTHON_E2E_MODEL` | unset | Optional model used by the Python real e2e test. |
 
 ### Mentioned But Not Active
 
@@ -197,55 +195,48 @@ SPECODE_LOOP_VERBOSE=1 uv run python scripts/specode_loop.py /path/to/project
 ```text
 .
 ├── README.md
-├── .env.example
-├── .gitignore
 ├── .agents/
 │   └── skills/
 │       └── specode-do-work/
 │           ├── SKILL.md
 │           └── references/
 │               └── workflow.txt
+├── .env.example
+├── .gitignore
+├── CONTEXT.md
+├── docs/
+│   └── adr/
 ├── examples/
 │   └── basic/
 │       ├── prd.md
 │       └── plan.md
-├── plans/
-│   └── specode_loop.md
-├── prd/
-│   └── specode_loop.md
+├── pyproject.toml
 ├── scripts/
-│   ├── specode_loop.py
-│   └── specode_loop.sh
+│   └── specode_loop.py
 └── tests/
     ├── fixtures/
     │   └── basic-project/
     │       ├── prd.md
     │       └── plan.md
     ├── test_specode_loop_python.py
-    ├── specode_loop_python-e2e.sh
-    ├── specode_loop-e2e.sh
-    └── specode_loop-regression.sh
+    └── specode_loop_python-e2e.sh
 ```
 
 Root-level `prd.md`, `plan.md`, `idea.md`, `prompt.md`, `.codex/` local Codex state, logs, secrets, and generated root `fixtures/` are intentionally ignored as local working files. The repository-owned bundled workflow skill lives under `.agents/skills/specode-do-work`.
 
 ## Tests
 
-The default Python regression suite uses a fake `sbx` and does not launch a
-real Docker Sandbox:
+The default deterministic verification loop is the Python regression suite. It
+uses a fake `sbx`, exercises runner behavior without launching a real Docker
+Sandbox, and is the normal feedback loop for local changes:
 
 ```bash
 uv run pytest
 ```
 
-The shell regression suite also uses a fake `sbx`:
-
-```bash
-bash tests/specode_loop-regression.sh
-```
-
-Real e2e tests are optional and manual because they require `sbx`, Docker
-Sandbox OAuth, network access, and real Codex execution.
+The Python real E2E harness is retained as an optional manual check. It is not
+the default loop because it requires `sbx`, Docker Sandbox OAuth, network
+access, and real Codex execution.
 
 Run the Python real e2e path against a copy of `examples/basic`:
 
@@ -267,25 +258,6 @@ Use a specific Python e2e model:
 
 ```bash
 SPECODE_LOOP_PYTHON_E2E_MODEL=YOUR_CODEX_MODEL bash tests/specode_loop_python-e2e.sh
-```
-
-Run the shell real e2e path:
-
-```bash
-unset OPENAI_API_KEY CODEX_API_KEY
-bash tests/specode_loop-e2e.sh
-```
-
-Keep the temporary e2e project:
-
-```bash
-SPECODE_LOOP_E2E_KEEP=1 bash tests/specode_loop-e2e.sh
-```
-
-Use a specific e2e model:
-
-```bash
-SPECODE_LOOP_E2E_MODEL=YOUR_CODEX_MODEL bash tests/specode_loop-e2e.sh
 ```
 
 ## References

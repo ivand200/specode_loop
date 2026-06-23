@@ -146,6 +146,10 @@ def assert_sandbox_not_called(calls_log: Path) -> None:
     assert not calls_log.exists(), calls_log.read_text(encoding="utf-8") if calls_log.exists() else ""
 
 
+def assert_bundled_skill_not_synced(project: Path) -> None:
+    assert not (project / ".agents" / "skills" / "specode-do-work").exists()
+
+
 def assert_sandbox_called(calls_log: Path) -> str:
     assert calls_log.exists()
     return calls_log.read_text(encoding="utf-8")
@@ -160,11 +164,13 @@ def re_fullmatch_hostname(value: str) -> re.Match[str] | None:
     return re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", value)
 
 
-def test_help_matches_shell_command_contract() -> None:
+def test_help_describes_python_command_contract() -> None:
     result = run_loop(None, "--help")
 
     assert result.returncode == 0
     assert "Usage: scripts/specode_loop.py PROJECT_DIR [options]" in result.stdout
+    assert "--prd PATH" in result.stdout
+    assert "--plan PATH" in result.stdout
     assert "--max-iterations N" in result.stdout
     assert "--reasoning-effort EFFORT" in result.stdout
     assert result.stderr == ""
@@ -211,15 +217,74 @@ def test_option_parsing_and_valid_run_execute_sandbox(tmp_path: Path, monkeypatc
     assert result.returncode == 0
     assert "Specode Loop preflight passed." in result.stdout
     assert f"Project: {project}" in result.stdout
+    assert f"PRD document: {project / 'prd.md'}" in result.stdout
+    assert f"Plan document: {project / 'plan.md'}" in result.stdout
     assert "Max iterations: 7" in result.stdout
     assert "Model: test-model" in result.stdout
     assert "Reasoning effort: medium" in result.stdout
     calls = assert_sandbox_called(calls_log)
     assert "run|specode-loop-project-" in calls
     assert f"codex {project} -- exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C {project}" in calls
-    assert "ALL TASKS DONE sentinel detected" in (project / "specode_loop.log").read_text(encoding="utf-8")
+    log = (project / "specode_loop.log").read_text(encoding="utf-8")
+    assert f"PRD document: {project / 'prd.md'}" in log
+    assert f"Plan document: {project / 'plan.md'}" in log
+    assert "ALL TASKS DONE sentinel detected" in log
     assert "rm|specode-loop-project-" in rm_log.read_text(encoding="utf-8")
     assert_no_temp_artifacts(tmp_path, project)
+
+
+def test_custom_planning_document_paths_resolve_from_project_and_reach_prompt(tmp_path: Path, monkeypatch) -> None:
+    project = tmp_path / "custom-docs"
+    project.mkdir()
+    prd = project / "planning" / "requirements"
+    plan = project / "work" / "phases.todo"
+    prd.parent.mkdir()
+    plan.parent.mkdir()
+    prd.write_text("# Custom PRD\n", encoding="utf-8")
+    plan.write_text("# Custom Plan\n\n- [ ] Do one task\n", encoding="utf-8")
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
+
+    result = run_loop(
+        project,
+        "--prd",
+        "planning/requirements",
+        "--plan",
+        "work/phases.todo",
+        path=path,
+    )
+
+    assert result.returncode == 0
+    assert f"PRD document: {prd}" in result.stdout
+    assert f"Plan document: {plan}" in result.stdout
+    log = (project / "specode_loop.log").read_text(encoding="utf-8")
+    assert f"PRD document: {prd}" in log
+    assert f"Plan document: {plan}" in log
+    calls = assert_sandbox_called(calls_log)
+    assert "PRD document: planning/requirements" in calls
+    assert "Plan document: work/phases.todo" in calls
+
+
+def test_absolute_custom_planning_document_paths_inside_project_are_accepted(tmp_path: Path, monkeypatch) -> None:
+    project = tmp_path / "absolute-docs"
+    project.mkdir()
+    prd = project / "docs" / "product brief"
+    plan = project / "plans" / "release"
+    prd.parent.mkdir()
+    plan.parent.mkdir()
+    prd.write_text("# PRD\n", encoding="utf-8")
+    plan.write_text("# Plan\n\n- [ ] Do one task\n", encoding="utf-8")
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
+
+    result = run_loop(project, "--prd", str(prd), "--plan", str(plan), path=path)
+
+    assert result.returncode == 0
+    assert f"PRD document: {prd}" in result.stdout
+    assert f"Plan document: {plan}" in result.stdout
+    calls = assert_sandbox_called(calls_log)
+    assert "PRD document: docs/product brief" in calls
+    assert "Plan document: plans/release" in calls
 
 
 def test_successive_task_done_iterations_continue_until_all_tasks_done(tmp_path: Path, monkeypatch) -> None:
@@ -426,7 +491,7 @@ def test_verbose_log_includes_raw_transcript_and_final_message(tmp_path: Path, m
     assert_no_temp_artifacts(tmp_path, project)
 
 
-def test_prompt_and_codex_argument_order_match_shell_contract(tmp_path: Path, monkeypatch) -> None:
+def test_prompt_and_codex_argument_order_match_python_command_contract(tmp_path: Path, monkeypatch) -> None:
     project = make_project(tmp_path, "prompt-contract")
     path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
     write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
@@ -441,11 +506,14 @@ def test_prompt_and_codex_argument_order_match_shell_contract(tmp_path: Path, mo
         f"model_reasoning_effort=\"high\" -o {project}/.specode_loop-last-message."
     ) in calls
     assert "Use the project-local specode-do-work skill." in calls
+    assert "PRD document: prd.md" in calls
+    assert "Plan document: plan.md" in calls
+    assert "Read the PRD document and plan document before choosing work." in calls
     assert "Work on AFK Phases only. Do not work on HITL Phases." in calls
-    assert "Select exactly one undone AFK Phase in plan.md for this run." in calls
-    assert "Mark the completed AFK Phase done in plan.md by changing its checkbox from \"[ ]\" to \"[x]\"." in calls
+    assert "Select exactly one undone AFK Phase in the plan document for this run." in calls
+    assert "Mark the completed AFK Phase done in the plan document by changing its checkbox from \"[ ]\" to \"[x]\"." in calls
     assert "If no undone AFK Phases remain, output exactly:" in calls
-    assert "When the selected AFK Phase is complete and plan.md has been updated, output exactly:" in calls
+    assert "When the selected AFK Phase is complete and the plan document has been updated, output exactly:" in calls
 
 
 def test_sandbox_names_are_hostname_safe_and_length_bounded(tmp_path: Path, monkeypatch) -> None:
@@ -484,8 +552,14 @@ def test_bundled_skill_is_copied_and_owned_target_is_overwritten(tmp_path: Path,
 
     assert result.returncode == 0
     assert "Bundled workflow skill synced: specode-do-work:" in result.stdout
-    assert "name: specode-do-work" in copied_skill.read_text(encoding="utf-8")
-    assert "stale local skill" not in copied_skill.read_text(encoding="utf-8")
+    copied_skill_text = copied_skill.read_text(encoding="utf-8")
+    assert "name: specode-do-work" in copied_skill_text
+    assert "Read the PRD document and plan document named by the runner prompt." in copied_skill_text
+    assert "Follow the runner prompt's task-selection rules exactly" in copied_skill_text
+    assert "first undone Markdown checkbox task" not in copied_skill_text
+    assert "Read `prd.md` and `plan.md` in the project root." not in copied_skill_text
+    assert "Do not make a git commit unless `prd.md` or `plan.md` explicitly requires it." not in copied_skill_text
+    assert "stale local skill" not in copied_skill_text
     assert "Specode Loop runner workflow" in copied_reference.read_text(encoding="utf-8")
     assert not stale_file.exists()
     assert unrelated_skill.read_text(encoding="utf-8") == "project-owned skill\n"
@@ -561,6 +635,8 @@ def test_invalid_options_fail_before_sandbox_execution(tmp_path: Path, monkeypat
         (("--model",), "--model requires a value"),
         (("--effort",), "--effort requires a value"),
         (("--reasoning-effort",), "--reasoning-effort requires a value"),
+        (("--prd",), "--prd requires a value"),
+        (("--plan",), "--plan requires a value"),
         (("--unexpected-option",), "unknown argument: --unexpected-option"),
     ]
     for args, expected_error in cases:
@@ -583,6 +659,93 @@ def test_project_option_must_be_first_argument(tmp_path: Path, monkeypatch) -> N
     assert_sandbox_not_called(calls_log)
 
 
+def test_missing_custom_planning_documents_fail_before_sandbox_execution(tmp_path: Path, monkeypatch) -> None:
+    project = tmp_path / "missing-custom-docs"
+    project.mkdir()
+    (project / "real-prd").write_text("# PRD\n", encoding="utf-8")
+    (project / "real-plan").write_text("# Plan\n", encoding="utf-8")
+    path, calls_log = install_fake_sbx(tmp_path)
+    monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
+
+    missing_prd = run_loop(project, "--prd", "missing-prd", "--plan", "real-plan", path=path)
+    assert missing_prd.returncode == 1
+    assert f"Error: required PRD document is missing: {project / 'missing-prd'}" in missing_prd.stderr
+    assert "Specode Loop preflight passed." not in missing_prd.stdout
+    assert_sandbox_not_called(calls_log)
+
+    missing_plan = run_loop(project, "--prd", "real-prd", "--plan", "missing-plan", path=path)
+    assert missing_plan.returncode == 1
+    assert f"Error: required plan document is missing: {project / 'missing-plan'}" in missing_plan.stderr
+    assert "Specode Loop preflight passed." not in missing_plan.stdout
+    assert_sandbox_not_called(calls_log)
+
+
+def test_relative_planning_document_paths_cannot_escape_project(tmp_path: Path, monkeypatch) -> None:
+    project = make_project(tmp_path, "containment-relative")
+    outside_prd = tmp_path / "outside-prd"
+    outside_plan = tmp_path / "outside-plan"
+    outside_prd.write_text("# Outside PRD\n", encoding="utf-8")
+    outside_plan.write_text("# Outside Plan\n", encoding="utf-8")
+    path, calls_log = install_fake_sbx(tmp_path)
+    monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
+
+    prd_result = run_loop(project, "--prd", "../outside-prd", path=path)
+    assert prd_result.returncode == 1
+    assert "Error: selected PRD document must resolve inside the Target Project:" in prd_result.stderr
+    assert "Specode Loop preflight passed." not in prd_result.stdout
+    assert_bundled_skill_not_synced(project)
+    assert_sandbox_not_called(calls_log)
+
+    plan_result = run_loop(project, "--plan", "../outside-plan", path=path)
+    assert plan_result.returncode == 1
+    assert "Error: selected plan document must resolve inside the Target Project:" in plan_result.stderr
+    assert "Specode Loop preflight passed." not in plan_result.stdout
+    assert_bundled_skill_not_synced(project)
+    assert_sandbox_not_called(calls_log)
+
+
+def test_absolute_planning_document_paths_cannot_escape_project(tmp_path: Path, monkeypatch) -> None:
+    project = make_project(tmp_path, "containment-absolute")
+    outside_prd = tmp_path / "absolute-outside-prd"
+    outside_plan = tmp_path / "absolute-outside-plan"
+    outside_prd.write_text("# Outside PRD\n", encoding="utf-8")
+    outside_plan.write_text("# Outside Plan\n", encoding="utf-8")
+    path, calls_log = install_fake_sbx(tmp_path)
+    monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
+
+    prd_result = run_loop(project, "--prd", str(outside_prd), path=path)
+    assert prd_result.returncode == 1
+    assert "Error: selected PRD document must resolve inside the Target Project:" in prd_result.stderr
+    assert "Specode Loop preflight passed." not in prd_result.stdout
+    assert_bundled_skill_not_synced(project)
+    assert_sandbox_not_called(calls_log)
+
+    plan_result = run_loop(project, "--plan", str(outside_plan), path=path)
+    assert plan_result.returncode == 1
+    assert "Error: selected plan document must resolve inside the Target Project:" in plan_result.stderr
+    assert "Specode Loop preflight passed." not in plan_result.stdout
+    assert_bundled_skill_not_synced(project)
+    assert_sandbox_not_called(calls_log)
+
+
+def test_planning_document_symlinks_cannot_resolve_outside_project(tmp_path: Path, monkeypatch) -> None:
+    project = make_project(tmp_path, "containment-symlink")
+    outside_prd = tmp_path / "symlink-target-prd"
+    outside_prd.write_text("# Outside PRD\n", encoding="utf-8")
+    linked_prd = project / "linked-prd"
+    linked_prd.symlink_to(outside_prd)
+    path, calls_log = install_fake_sbx(tmp_path)
+    monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
+
+    result = run_loop(project, "--prd", "linked-prd", path=path)
+
+    assert result.returncode == 1
+    assert "Error: selected PRD document must resolve inside the Target Project:" in result.stderr
+    assert "Specode Loop preflight passed." not in result.stdout
+    assert_bundled_skill_not_synced(project)
+    assert_sandbox_not_called(calls_log)
+
+
 def test_missing_runtime_prerequisites_fail_before_sandbox_execution(tmp_path: Path, monkeypatch) -> None:
     project = make_project(tmp_path)
     result = run_loop(project, path="")
@@ -598,7 +761,7 @@ def test_missing_runtime_prerequisites_fail_before_sandbox_execution(tmp_path: P
     (missing_prd / "plan.md").write_text("# Plan\n", encoding="utf-8")
     result = run_loop(missing_prd, path=path)
     assert result.returncode == 1
-    assert "required PRD file is missing" in result.stderr
+    assert "required PRD document is missing" in result.stderr
     assert_sandbox_not_called(calls_log)
 
     missing_plan = tmp_path / "missing-plan"
@@ -606,7 +769,7 @@ def test_missing_runtime_prerequisites_fail_before_sandbox_execution(tmp_path: P
     (missing_plan / "prd.md").write_text("# PRD\n", encoding="utf-8")
     result = run_loop(missing_plan, path=path)
     assert result.returncode == 1
-    assert "required plan file is missing" in result.stderr
+    assert "required plan document is missing" in result.stderr
     assert_sandbox_not_called(calls_log)
 
 

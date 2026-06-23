@@ -11,9 +11,9 @@ Execute one Specode Loop task end-to-end inside the sandbox.
 
 ### 1. Understand the task
 
-Read `prd.md` and `plan.md` in the project root. Select exactly the first undone Markdown checkbox task in `plan.md`, unless the plan gives explicit priority rules.
+Read the PRD document and plan document named by the runner prompt. Follow the runner prompt's task-selection rules exactly, including any AFK/HITL boundaries, and select exactly one eligible undone plan task.
 
-If there are no undone checkbox tasks, output exactly:
+If there are no eligible undone plan tasks, output exactly:
 
 ```text
 ALL TASKS DONE
@@ -27,7 +27,7 @@ Complete only the selected task. Work directly in the project working tree.
 
 Do not modify runner-managed copied workflow skill files under `.agents/skills/specode-do-work` as part of task work.
 
-Do not make a git commit unless `prd.md` or `plan.md` explicitly requires it.
+Do not make a git commit unless the PRD document or plan document explicitly requires it.
 
 ### 3. Validate
 
@@ -35,12 +35,12 @@ Run the relevant feedback loops for the task, such as tests, linters, typechecke
 
 ### 4. Update the plan and report
 
-Mark the completed task done in `plan.md` by changing its checkbox from `[ ]` to `[x]`.
+Mark the completed task done in the plan document by changing its checkbox from `[ ]` to `[x]`.
 
-When the selected task is complete and `plan.md` has been updated, output exactly:
+When the selected task is complete and the plan document has been updated, output exactly:
 
 ```text
 TASK DONE
 ```
 
-Do not output `TASK DONE` unless the selected task is complete and `plan.md` was updated.
+Do not output `TASK DONE` unless the selected task is complete and the plan document was updated.
