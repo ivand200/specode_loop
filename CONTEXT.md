@@ -13,12 +13,12 @@ The project directory that Specode Loop operates on. It contains the planning do
 _Avoid_: Workspace, repo, fixture
 
 **Planning Documents**:
-The target project's `prd.md` and `plan.md`, used together as the source of requested behavior and ordered work.
+The target project's selected PRD document and plan document, used together as the source of requested behavior and ordered work. By convention, the default filenames are `prd.md` and `plan.md`, but projects may choose different filenames through the runner command.
 _Avoid_: Docs, specs
 
 **Plan Task**:
-An undone Markdown checkbox item in `plan.md` that can be selected for a sandbox iteration.
-_Avoid_: Step, item, todo
+An eligible undone AFK phase in the selected plan document that can be selected for a sandbox iteration.
+_Avoid_: Step, item, todo, acceptance criterion
 
 **Sandbox Iteration**:
 One sandboxed Codex run that either completes exactly one plan task, reports that all plan tasks are complete, or fails without a success sentinel.

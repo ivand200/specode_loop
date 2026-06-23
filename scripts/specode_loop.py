@@ -17,6 +17,8 @@ ALLOWED_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 RUNNER_SKILLS_REL = Path(".agents") / "skills"
 SPECODE_REQUIRED_SKILLS = ("specode-do-work",)
 SPECODE_WORKFLOW_SKILL = "specode-do-work"
+DEFAULT_PRD_DOCUMENT = Path("prd.md")
+DEFAULT_PLAN_DOCUMENT = Path("plan.md")
 TASK_DONE_SENTINEL = "TASK DONE"
 ALL_TASKS_DONE_SENTINEL = "ALL TASKS DONE"
 FAILURE_EXCERPT_LINES = 30
@@ -28,6 +30,16 @@ class Options:
     max_iterations: str = MAX_ITERATIONS_DEFAULT
     model: str = ""
     reasoning_effort: str = ""
+    prd: str = str(DEFAULT_PRD_DOCUMENT)
+    plan: str = str(DEFAULT_PLAN_DOCUMENT)
+
+
+@dataclass(frozen=True)
+class PlanningDocuments:
+    prd_abs: Path
+    plan_abs: Path
+    prd_role_path: Path
+    plan_role_path: Path
 
 
 @dataclass
@@ -42,12 +54,14 @@ class LoopState:
 def usage() -> str:
     return """Usage: scripts/specode_loop.py PROJECT_DIR [options]
 
-Run Specode Loop for a project with conventional planning documents.
+Run Specode Loop for a project with selected planning documents.
 
 Arguments:
-  PROJECT_DIR              Project directory containing prd.md and plan.md
+  PROJECT_DIR              Target Project directory
 
 Options:
+  --prd PATH               PRD document path (default: prd.md)
+  --plan PATH              Plan document path (default: plan.md)
   --max-iterations N       Maximum sandbox iterations to run (default: 10)
   --model MODEL            Optional model for the sandboxed Codex run
   --effort EFFORT          Optional reasoning effort: minimal, low, medium, high, xhigh
@@ -99,6 +113,16 @@ def parse_args(argv: list[str]) -> Options:
                 fail("--max-iterations requires a value")
             options.max_iterations = argv[index + 1]
             index += 2
+        elif arg == "--prd":
+            if index + 1 >= len(argv):
+                fail("--prd requires a value")
+            options.prd = argv[index + 1]
+            index += 2
+        elif arg == "--plan":
+            if index + 1 >= len(argv):
+                fail("--plan requires a value")
+            options.plan = argv[index + 1]
+            index += 2
         elif arg == "--model":
             if index + 1 >= len(argv):
                 fail("--model requires a value")
@@ -139,6 +163,39 @@ def resolve_project_dir(project_dir: str) -> Path:
     if not project_abs.is_dir():
         fail(f"project directory does not exist: {project_dir}")
     return project_abs
+
+
+def resolve_planning_document(project_abs: Path, role: str, value: str) -> tuple[Path, Path]:
+    configured_path = Path(value)
+    selected_path = configured_path if configured_path.is_absolute() else project_abs / configured_path
+
+    try:
+        resolved_path = selected_path.resolve(strict=True)
+    except FileNotFoundError:
+        fail(f"required {role} document is missing: {selected_path}")
+    except OSError:
+        fail(f"required {role} document is missing: {selected_path}")
+
+    if not resolved_path.is_file():
+        fail(f"required {role} document is missing: {selected_path}")
+
+    try:
+        role_path = resolved_path.relative_to(project_abs)
+    except ValueError:
+        fail(f"selected {role} document must resolve inside the Target Project: {selected_path}")
+    return resolved_path, role_path
+
+
+def resolve_planning_documents(project_abs: Path, options: Options) -> PlanningDocuments:
+    prd_abs, prd_role_path = resolve_planning_document(project_abs, "PRD", options.prd)
+    plan_abs, plan_role_path = resolve_planning_document(project_abs, "plan", options.plan)
+
+    return PlanningDocuments(
+        prd_abs=prd_abs,
+        plan_abs=plan_abs,
+        prd_role_path=prd_role_path,
+        plan_role_path=plan_role_path,
+    )
 
 
 def runner_root() -> Path:
@@ -201,7 +258,7 @@ def warn_for_existing_git_state(project_abs: Path) -> None:
         warn(f"{project_abs} has existing staged changes. Continuing.")
 
 
-def preflight(options: Options) -> tuple[Path, list[str]]:
+def preflight(options: Options) -> tuple[Path, PlanningDocuments, list[str]]:
     validate_positive_integer("--max-iterations", options.max_iterations)
     validate_reasoning_effort(options.reasoning_effort)
 
@@ -209,13 +266,7 @@ def preflight(options: Options) -> tuple[Path, list[str]]:
         fail("Docker Sandbox CLI 'sbx' is not installed or not on PATH")
 
     project_abs = resolve_project_dir(options.project_dir)
-    prd_abs = project_abs / "prd.md"
-    plan_abs = project_abs / "plan.md"
-
-    if not prd_abs.is_file():
-        fail(f"required PRD file is missing: {prd_abs}")
-    if not plan_abs.is_file():
-        fail(f"required plan file is missing: {plan_abs}")
+    planning_documents = resolve_planning_documents(project_abs, options)
 
     warn_for_existing_git_state(project_abs)
     synced_skills = sync_required_bundled_skills(project_abs)
@@ -223,8 +274,8 @@ def preflight(options: Options) -> tuple[Path, list[str]]:
     print("Specode Loop preflight passed.")
     print(f"Project: {project_abs}")
     print("Workspace mode: direct (sandbox edits apply to this working tree)")
-    print(f"PRD: {prd_abs}")
-    print(f"Plan: {plan_abs}")
+    print(f"PRD document: {planning_documents.prd_abs}")
+    print(f"Plan document: {planning_documents.plan_abs}")
     for synced_skill in synced_skills:
         print(f"Bundled workflow skill synced: {synced_skill}")
     print(f"Max iterations: {options.max_iterations}")
@@ -236,15 +287,21 @@ def preflight(options: Options) -> tuple[Path, list[str]]:
         print(f"Reasoning effort: {options.reasoning_effort}")
     else:
         print("Reasoning effort: Codex/project default")
-    return project_abs, synced_skills
+    return project_abs, planning_documents, synced_skills
 
 
-def write_preflight_log(state: LoopState, project_abs: Path, options: Options, synced_skills: list[str]) -> None:
+def write_preflight_log(
+    state: LoopState,
+    project_abs: Path,
+    planning_documents: PlanningDocuments,
+    options: Options,
+    synced_skills: list[str],
+) -> None:
     log_line(state, "Specode Loop preflight passed.", terminal=False)
     log_line(state, f"Project: {project_abs}", terminal=False)
     log_line(state, "Workspace mode: direct (sandbox edits apply to this working tree)", terminal=False)
-    log_line(state, f"PRD: {project_abs / 'prd.md'}", terminal=False)
-    log_line(state, f"Plan: {project_abs / 'plan.md'}", terminal=False)
+    log_line(state, f"PRD document: {planning_documents.prd_abs}", terminal=False)
+    log_line(state, f"Plan document: {planning_documents.plan_abs}", terminal=False)
     for synced_skill in synced_skills:
         log_line(state, f"Bundled workflow skill synced: {synced_skill}", terminal=False)
     log_line(state, f"Verbose transcript logging: {os.environ.get('SPECODE_LOOP_VERBOSE', '0')}", terminal=False)
@@ -272,7 +329,7 @@ def new_sandbox_name(project_abs: Path, iteration: int) -> str:
     return name[:63].rstrip("-")
 
 
-def build_prompt(project_abs: Path) -> str:
+def build_prompt(project_abs: Path, planning_documents: PlanningDocuments) -> str:
     return f"""You are running non-interactively inside Docker Sandbox.
 
 Project root:
@@ -280,18 +337,21 @@ Project root:
 
 Use the project-local {SPECODE_WORKFLOW_SKILL} skill.
 
-Read prd.md and plan.md before choosing work.
+PRD document: {planning_documents.prd_role_path}
+Plan document: {planning_documents.plan_role_path}
+
+Read the PRD document and plan document before choosing work.
 
 Work on AFK Phases only. Do not work on HITL Phases.
 
-Select exactly one undone AFK Phase in plan.md for this run.
+Select exactly one undone AFK Phase in the plan document for this run.
 Complete only the selected AFK Phase.
-Mark the completed AFK Phase done in plan.md by changing its checkbox from "[ ]" to "[x]".
+Mark the completed AFK Phase done in the plan document by changing its checkbox from "[ ]" to "[x]".
 
 If no undone AFK Phases remain, output exactly:
 {ALL_TASKS_DONE_SENTINEL}
 
-When the selected AFK Phase is complete and plan.md has been updated, output exactly:
+When the selected AFK Phase is complete and the plan document has been updated, output exactly:
 {TASK_DONE_SENTINEL}
 
 Blocked or incomplete work must not output a success sentinel.
@@ -437,7 +497,13 @@ def stream_sandbox_command(command: list[str], state: LoopState) -> int:
         return process.wait()
 
 
-def run_single_task_iteration(project_abs: Path, options: Options, state: LoopState, iteration: int) -> bool:
+def run_single_task_iteration(
+    project_abs: Path,
+    planning_documents: PlanningDocuments,
+    options: Options,
+    state: LoopState,
+    iteration: int,
+) -> bool:
     state.last_sentinel = ""
     state.active_sandbox = new_sandbox_name(project_abs, iteration)
     sandbox_name = state.active_sandbox
@@ -457,7 +523,7 @@ def run_single_task_iteration(project_abs: Path, options: Options, state: LoopSt
         codex_args.extend(["-m", options.model])
     if options.reasoning_effort:
         codex_args.extend(["-c", f'model_reasoning_effort="{options.reasoning_effort}"'])
-    codex_args.extend(["-o", str(state.last_message_output), build_prompt(project_abs)])
+    codex_args.extend(["-o", str(state.last_message_output), build_prompt(project_abs, planning_documents)])
 
     log_line(state)
     log_line(
@@ -504,9 +570,9 @@ def run_single_task_iteration(project_abs: Path, options: Options, state: LoopSt
     return False
 
 
-def run_loop(project_abs: Path, options: Options, state: LoopState) -> int:
+def run_loop(project_abs: Path, planning_documents: PlanningDocuments, options: Options, state: LoopState) -> int:
     for iteration in range(1, int(options.max_iterations) + 1):
-        if run_single_task_iteration(project_abs, options, state, iteration):
+        if run_single_task_iteration(project_abs, planning_documents, options, state, iteration):
             cleanup_active_sandbox(state)
             if state.last_sentinel == "all":
                 return 0
@@ -532,10 +598,10 @@ def main(argv: list[str] | None = None) -> int:
     state = LoopState()
     install_interrupt_handlers(state)
     try:
-        project_abs, synced_skills = preflight(options)
+        project_abs, planning_documents, synced_skills = preflight(options)
         state.log_file = project_abs / "specode_loop.log"
-        write_preflight_log(state, project_abs, options, synced_skills)
-        return run_loop(project_abs, options, state)
+        write_preflight_log(state, project_abs, planning_documents, options, synced_skills)
+        return run_loop(project_abs, planning_documents, options, state)
     finally:
         cleanup_temp_output(state)
         cleanup_active_sandbox(state)
