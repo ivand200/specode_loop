@@ -122,7 +122,7 @@ main() {
   make_project
   log "Python E2E project: $PROJECT_DIR"
 
-  args=("$PROJECT_DIR" --max-iterations 4)
+  args=("$PROJECT_DIR" --max-iterations 5)
   if [[ -n "${SPECODE_LOOP_PYTHON_E2E_MODEL:-${SPECODE_LOOP_E2E_MODEL:-}}" ]]; then
     args+=(--model "${SPECODE_LOOP_PYTHON_E2E_MODEL:-${SPECODE_LOOP_E2E_MODEL:-}}")
   fi
@@ -139,25 +139,27 @@ main() {
   assert_file_contains "$PROJECT_DIR/prd.md" "## User Stories"
   assert_file_contains "$PROJECT_DIR/prd.md" "## Implementation Decisions"
   assert_file_contains "$PROJECT_DIR/prd.md" "## Testing Decisions"
-  assert_file_contains "$PROJECT_DIR/plan.md" "# Plan: Specode Loop Example Acceptance Fixture"
+  assert_file_contains "$PROJECT_DIR/plan.md" "# Plan: Specode Loop Request Response Fixture"
   assert_file_contains "$PROJECT_DIR/plan.md" "> Source PRD: prd.md"
   assert_file_contains "$PROJECT_DIR/plan.md" "## Architectural decisions"
-  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] Phase 1: Artifact Status Trail"
-  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] Phase 2: Derived Summary"
-  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] Phase 3: Executable Verification"
+  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] Phase 1: Seed Request Artifact"
+  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] Phase 2: Deterministic Response Artifact"
+  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] Phase 3: Reviewable Transcript"
+  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] Phase 4: Executable Integration Check"
   assert_file_contains "$PROJECT_DIR/plan.md" "### Acceptance criteria"
   assert_file_contains "$PROJECT_DIR/plan.md" "## Blocked by"
-  assert_file_exact "$PROJECT_DIR/artifact.txt" $'Specode Loop example task 1 complete.\nSpecode Loop example task 2 complete.'
-  assert_file_exact "$PROJECT_DIR/summary.md" $'# Specode Loop Example Summary\n\n- Task 1: Specode Loop example task 1 complete.\n- Task 2: Specode Loop example task 2 complete.'
+  assert_file_exact "$PROJECT_DIR/request.txt" $'REQUEST_ID: specode-basic-001\nUSER_REQUEST: Summarize the Specode Loop demo state.\nEXPECTED_RESPONSE_KIND: deterministic-summary'
+  assert_file_exact "$PROJECT_DIR/response.txt" $'RESPONSE_ID: specode-basic-001\nSTATUS: complete\nSUMMARY: Specode Loop can turn one local request into one deterministic response.'
+  assert_file_exact "$PROJECT_DIR/transcript.md" $'# Specode Loop Request/Response Transcript\n\n## Request\n\nSummarize the Specode Loop demo state.\n\n## Response\n\nSpecode Loop can turn one local request into one deterministic response.'
   assert_executable "$PROJECT_DIR/verify.sh"
-  assert_project_command_exact "Specode Loop example verified." "$PROJECT_DIR" ./verify.sh
-  assert_count "3" "$(count_file_matches '^## \[x\] Phase' "$PROJECT_DIR/plan.md")" "completed phase count"
+  assert_project_command_exact "Specode Loop request/response example verified." "$PROJECT_DIR" ./verify.sh
+  assert_count "4" "$(count_file_matches '^## \[x\] Phase' "$PROJECT_DIR/plan.md")" "completed phase count"
   assert_count "0" "$(count_file_matches '^## \[ \] Phase' "$PROJECT_DIR/plan.md")" "remaining unchecked phase count"
   [[ -d "$PROJECT_DIR/.agents/skills/specode-do-work" ]] || fail "project-local specode-do-work skill was not copied"
   assert_file_contains "$PROJECT_DIR/.agents/skills/specode-do-work/SKILL.md" "name: specode-do-work"
   assert_path_missing "$PROJECT_DIR/.codex/skills/do-work"
   assert_file_contains "$PROJECT_DIR/specode_loop.log" "Bundled workflow skill synced: specode-do-work:$PROJECT_DIR/.agents/skills/specode-do-work"
-  assert_count "3" "$(count_file_matches "TASK DONE sentinel detected" "$PROJECT_DIR/specode_loop.log")" "TASK DONE sentinel count"
+  assert_count "4" "$(count_file_matches "TASK DONE sentinel detected" "$PROJECT_DIR/specode_loop.log")" "TASK DONE sentinel count"
   assert_file_contains "$PROJECT_DIR/specode_loop.log" "ALL TASKS DONE sentinel detected"
   assert_file_contains "$STDOUT_FILE" "Specode Loop preflight passed."
   assert_file_contains "$STDOUT_FILE" "ALL TASKS DONE sentinel detected"

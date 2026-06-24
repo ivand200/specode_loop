@@ -17,7 +17,7 @@ specode_loop.log
 /fixtures/
 /plans
 /prd
-/tasks
+# /tasks
 
 # OS and editor noise
 .DS_Store

@@ -1,4 +1,4 @@
-# Plan: Specode Loop Example Acceptance Fixture
+# Plan: Specode Loop Request Response Fixture
 
 > Source PRD: prd.md
 
@@ -8,78 +8,136 @@ Durable decisions that apply across all phases:
 
 - **Planning documents**: The Target Project uses conventional root-level
   `prd.md` and `plan.md` files.
-- **Execution boundary**: Each unchecked phase is completed by one Sandbox
+- **Execution boundary**: Each unchecked AFK phase is completed by one Sandbox
   Iteration.
-- **Verification seam**: The final behavior is verified through an executable
-  shell command rather than implementation details.
+- **Request/response contract**: The example models one local request, one
+  deterministic response, and one reviewable transcript.
+- **Verification seam**: Final behavior is verified through an executable shell
+  command rather than implementation details.
 - **Determinism**: All expected outputs are exact plain text strings.
 - **Runner-managed configuration**: `.agents/skills/specode-do-work` remains
   owned by Specode Loop and is not modified by task work.
 
 ---
 
-## [ ] Phase 1: Artifact Status Trail
+## [ ] Phase 1: Seed Request Artifact
 
-**User stories**: 2, 3, 5, 6
+**Type**: AFK
 
-### What to build
-
-Create the first visible project artifact and then extend it in a later Sandbox
-Iteration. This phase proves that Specode Loop can complete dependent file work
-one phase at a time.
-
-### Acceptance criteria
-
-- Create `artifact.txt` containing exactly `Specode Loop example task 1 complete.`
-- Append `Specode Loop example task 2 complete.` on a new line in `artifact.txt`.
-
-## Blocked by
-
-None - can start immediately
-
----
-
-## [ ] Phase 2: Derived Summary
-
-**User stories**: 1, 2, 3, 5, 6
+**User stories**: 1, 2, 3, 4, 6, 7, 8
 
 ### What to build
 
-Add a summary derived from the artifact trail. This phase proves that a later
-Sandbox Iteration can read prior work and create a second deterministic project
-artifact from it.
+Create the first visible project artifact: a deterministic local request that
+later phases can answer and verify. This phase proves that the first Sandbox
+Iteration can establish stable request context for the rest of the plan.
 
 ### Acceptance criteria
 
-- Create `summary.md` containing exactly:
-  ```markdown
-  # Specode Loop Example Summary
-
-  - Task 1: Specode Loop example task 1 complete.
-  - Task 2: Specode Loop example task 2 complete.
+- [ ] Create `request.txt` containing exactly:
+  ```text
+  REQUEST_ID: specode-basic-001
+  USER_REQUEST: Summarize the Specode Loop demo state.
+  EXPECTED_RESPONSE_KIND: deterministic-summary
   ```
+- [ ] Do not create the response, transcript, or verification command in this
+  phase.
 
 ## Blocked by
 
-- Blocked by #1: Artifact Status Trail
+None - can start immediately.
 
 ---
 
-## [ ] Phase 3: Executable Verification
+## [ ] Phase 2: Deterministic Response Artifact
 
-**User stories**: 1, 3, 4, 5, 6
+**Type**: AFK
+
+**User stories**: 2, 3, 4, 6, 7, 8
 
 ### What to build
 
-Add a command that verifies the finished Target Project from the outside. This
-phase proves that the final e2e state can be checked through behavior after all
-Sandbox Iterations finish.
+Read the seeded request and create the deterministic response artifact. This
+phase proves that a later Sandbox Iteration can use prior project state to
+produce the next request/response output.
 
 ### Acceptance criteria
 
-- Create executable `verify.sh` that exits with status 0 only when `artifact.txt` and `summary.md` match the expected contents, and prints exactly `Specode Loop example verified.` on success.
+- [ ] Confirm `request.txt` exists and contains the expected request identifier.
+- [ ] Create `response.txt` containing exactly:
+  ```text
+  RESPONSE_ID: specode-basic-001
+  STATUS: complete
+  SUMMARY: Specode Loop can turn one local request into one deterministic response.
+  ```
+- [ ] Do not create the transcript or verification command in this phase.
 
 ## Blocked by
 
-- Blocked by #1: Artifact Status Trail
-- Blocked by #2: Derived Summary
+- Blocked by #Phase 1: Seed Request Artifact
+
+---
+
+## [ ] Phase 3: Reviewable Transcript
+
+**Type**: AFK
+
+**User stories**: 2, 3, 4, 6, 7, 8
+
+### What to build
+
+Create a short transcript that pairs the request with its response in a
+human-reviewable form. This phase proves that another Sandbox Iteration can
+combine earlier artifacts into a derived output.
+
+### Acceptance criteria
+
+- [ ] Confirm `request.txt` and `response.txt` exist before creating the
+  transcript.
+- [ ] Create `transcript.md` containing exactly:
+  ```markdown
+  # Specode Loop Request/Response Transcript
+
+  ## Request
+
+  Summarize the Specode Loop demo state.
+
+  ## Response
+
+  Specode Loop can turn one local request into one deterministic response.
+  ```
+- [ ] Do not create the verification command in this phase.
+
+## Blocked by
+
+- Blocked by #Phase 1: Seed Request Artifact
+- Blocked by #Phase 2: Deterministic Response Artifact
+
+---
+
+## [ ] Phase 4: Executable Integration Check
+
+**Type**: AFK
+
+**User stories**: 1, 2, 4, 5, 6, 7, 9, 10
+
+### What to build
+
+Add the external verification seam for the finished Target Project. This phase
+proves that real e2e tests can validate completed behavior by running one command
+instead of inspecting implementation choices.
+
+### Acceptance criteria
+
+- [ ] Create executable `verify.sh`.
+- [ ] `./verify.sh` exits with status 0 only when `request.txt`, `response.txt`,
+  and `transcript.md` match their expected contents.
+- [ ] `./verify.sh` prints exactly
+  `Specode Loop request/response example verified.` on success.
+- [ ] Leave `.agents/skills/specode-do-work` unchanged.
+
+## Blocked by
+
+- Blocked by #Phase 1: Seed Request Artifact
+- Blocked by #Phase 2: Deterministic Response Artifact
+- Blocked by #Phase 3: Reviewable Transcript

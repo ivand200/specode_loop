@@ -33,7 +33,7 @@ Use a specific model or reasoning effort when you want to override your Codex de
 uv run python scripts/specode_loop.py "$DEMO_PROJECT" --model YOUR_CODEX_MODEL --reasoning-effort medium
 ```
 
-The example completes three deterministic plan phases, then stops after the
+The example completes four deterministic plan phases, then stops after the
 runner observes `ALL TASKS DONE`.
 
 Verbose transcript logging:
