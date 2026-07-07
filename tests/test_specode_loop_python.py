@@ -17,12 +17,15 @@ def run_loop(
     *args: str,
     path: str | None = None,
     runner: Path = RUNNER,
+    input_text: str | None = None,
+    codex_home: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     command = [sys.executable, str(runner)]
     if project is not None:
         command.append(str(project))
     command.extend(args)
     env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home or ROOT_DIR / ".missing-test-codex-home")
     if path is not None:
         env["PATH"] = path
     return subprocess.run(
@@ -30,6 +33,7 @@ def run_loop(
         cwd=ROOT_DIR,
         env=env,
         text=True,
+        input=input_text,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
@@ -54,6 +58,23 @@ def make_project(tmp_path: Path, name: str = "project") -> Path:
     return project
 
 
+def make_global_do_work_skill(tmp_path: Path) -> Path:
+    codex_home = tmp_path / "codex-home"
+    skill_dir = codex_home / "skills" / "do-work"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: do-work\n"
+        "description: Test global do-work skill.\n"
+        "---\n"
+        "\n"
+        "# Test Global Do Work\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "notes.txt").write_text("copied from global skill\n", encoding="utf-8")
+    return codex_home
+
+
 def install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -65,31 +86,47 @@ def install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
         "cmd=\"${1:-}\"\n"
         "shift || true\n"
         "case \"$cmd\" in\n"
-        "  run)\n"
+        "  create)\n"
         "    name=\"\"\n"
         "    if [[ \"${1:-}\" == \"--name\" ]]; then\n"
         "      name=\"${2:-}\"\n"
         "      shift 2\n"
         "    fi\n"
+        "    printf 'create|%s|%s\\n' \"$name\" \"$*\" >>\"$FAKE_SBX_CALLS\"\n"
+        "    if [[ \"${1:-}\" == \"codex\" && -n \"${2:-}\" ]]; then\n"
+        "      for skill_name in do-work specode-do-work; do\n"
+        "        skill_path=\"$2/.agents/skills/$skill_name/SKILL.md\"\n"
+        "        if [[ -f \"$skill_path\" ]]; then\n"
+        "          printf 'skill-before-exec|%s|present\\n' \"$skill_path\" >>\"$FAKE_SBX_CALLS\"\n"
+        "        else\n"
+        "          printf 'skill-before-exec|%s|missing\\n' \"$skill_path\" >>\"$FAKE_SBX_CALLS\"\n"
+        "        fi\n"
+        "      done\n"
+        "    fi\n"
+        "    if [[ -f \"$FAKE_SBX_DIR/create.status\" ]]; then exit \"$(cat \"$FAKE_SBX_DIR/create.status\")\"; fi\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "  exec)\n"
+        "    name=\"${1:-}\"\n"
+        "    shift || true\n"
         "    count_file=\"$FAKE_SBX_DIR/count\"\n"
         "    count=0\n"
         "    if [[ -f \"$count_file\" ]]; then count=\"$(cat \"$count_file\")\"; fi\n"
         "    count=$((count + 1))\n"
         "    printf '%s\\n' \"$count\" >\"$count_file\"\n"
-        "    printf 'run|%s|%s\\n' \"$name\" \"$*\" >>\"$FAKE_SBX_CALLS\"\n"
-        "    if [[ \"${1:-}\" == \"codex\" && -n \"${2:-}\" ]]; then\n"
-        "      skill_path=\"$2/.agents/skills/specode-do-work/SKILL.md\"\n"
-        "      if [[ -f \"$skill_path\" ]]; then\n"
-        "        printf 'skill-before-run|%s|present\\n' \"$skill_path\" >>\"$FAKE_SBX_CALLS\"\n"
-        "      else\n"
-        "        printf 'skill-before-run|%s|missing\\n' \"$skill_path\" >>\"$FAKE_SBX_CALLS\"\n"
-        "      fi\n"
-        "    fi\n"
+        "    printf 'exec|%s|%s\\n' \"$name\" \"$*\" >>\"$FAKE_SBX_CALLS\"\n"
         "    output_file=\"$FAKE_SBX_DIR/run_${count}.out\"\n"
         "    status_file=\"$FAKE_SBX_DIR/run_${count}.status\"\n"
         "    interrupt_file=\"$FAKE_SBX_DIR/run_${count}.interrupt\"\n"
         "    last_message_file=\"$FAKE_SBX_DIR/run_${count}.last\"\n"
         "    if [[ -f \"$output_file\" ]]; then cat \"$output_file\"; fi\n"
+        "    if [[ \"${FAKE_SBX_ECHO_STDIN:-}\" == \"1\" ]]; then\n"
+        "      stdin_payload=\"$(cat)\"\n"
+        "      if [[ -n \"$stdin_payload\" ]]; then\n"
+        "        printf 'stdin|%s\\n' \"$stdin_payload\" >>\"$FAKE_SBX_CALLS\"\n"
+        "        printf 'STDIN:%s\\n' \"$stdin_payload\"\n"
+        "      fi\n"
+        "    fi\n"
         "    if [[ -f \"$last_message_file\" ]]; then\n"
         "      output_path=\"\"\n"
         "      previous=\"\"\n"
@@ -108,6 +145,11 @@ def install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
         "    exit 0\n"
         "    ;;\n"
         "  rm)\n"
+        "    if [[ \"${1:-}\" != \"--force\" ]]; then\n"
+        "      printf 'expected sbx rm --force, got: %s\\n' \"$*\" >&2\n"
+        "      exit 64\n"
+        "    fi\n"
+        "    shift\n"
         "    printf 'rm|%s\\n' \"${1:-}\" >>\"$FAKE_SBX_RM_CALLS\"\n"
         "    if [[ -f \"$FAKE_SBX_DIR/rm.status\" ]]; then exit \"$(cat \"$FAKE_SBX_DIR/rm.status\")\"; fi\n"
         "    exit 0\n"
@@ -223,14 +265,34 @@ def test_option_parsing_and_valid_run_execute_sandbox(tmp_path: Path, monkeypatc
     assert "Model: test-model" in result.stdout
     assert "Reasoning effort: medium" in result.stdout
     calls = assert_sandbox_called(calls_log)
-    assert "run|specode-loop-project-" in calls
-    assert f"codex {project} -- exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C {project}" in calls
+    assert "create|specode-loop-project-" in calls
+    assert f"codex {project}" in calls
+    assert f"exec|specode-loop-project-" in calls
+    assert f"codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C {project}" in calls
     log = (project / "specode_loop.log").read_text(encoding="utf-8")
     assert f"PRD document: {project / 'prd.md'}" in log
     assert f"Plan document: {project / 'plan.md'}" in log
     assert "ALL TASKS DONE sentinel detected" in log
     assert "rm|specode-loop-project-" in rm_log.read_text(encoding="utf-8")
     assert_no_temp_artifacts(tmp_path, project)
+
+
+def test_default_model_and_reasoning_effort_are_passed_to_codex(tmp_path: Path, monkeypatch) -> None:
+    project = make_project(tmp_path, "defaults")
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
+
+    result = run_loop(project, path=path)
+
+    calls = assert_sandbox_called(calls_log)
+    assert result.returncode == 0
+    assert "Model: gpt-5.5" in result.stdout
+    assert "Reasoning effort: high" in result.stdout
+    assert (
+        f"codex exec --dangerously-bypass-approvals-and-sandbox "
+        f"--skip-git-repo-check -C {project} -m gpt-5.5 -c "
+        f"model_reasoning_effort=\"high\" -o {project}/.specode_loop-last-message."
+    ) in calls
 
 
 def test_custom_planning_document_paths_resolve_from_project_and_reach_prompt(tmp_path: Path, monkeypatch) -> None:
@@ -302,9 +364,30 @@ def test_successive_task_done_iterations_continue_until_all_tasks_done(tmp_path:
     assert "finishing" in result.stdout
     assert "TASK DONE sentinel detected; iteration successful" in log
     assert "ALL TASKS DONE sentinel detected; overall run complete" in log
-    assert calls.count("run|specode-loop-multi-step-") == 2
+    assert calls.count("create|specode-loop-multi-step-") == 2
+    assert calls.count("exec|specode-loop-multi-step-") == 2
     assert rm_log.read_text(encoding="utf-8").count("rm|specode-loop-multi-step-") == 2
     assert_no_temp_artifacts(tmp_path, project)
+
+
+def test_last_message_sentinel_takes_precedence_over_echoed_prompt_text(tmp_path: Path, monkeypatch) -> None:
+    project = make_project(tmp_path, "echoed-prompt")
+    path, calls_log, rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    write_scenario(tmp_path, 1, "If no undone AFK Phases remain, output exactly:\nALL TASKS DONE\n")
+    write_last_message(tmp_path, 1, "TASK DONE\n")
+    write_scenario(tmp_path, 2, "No remaining phases.\n")
+    write_last_message(tmp_path, 2, "ALL TASKS DONE\n")
+
+    result = run_loop(project, "--max-iterations", "2", path=path)
+
+    log = (project / "specode_loop.log").read_text(encoding="utf-8")
+    calls = assert_sandbox_called(calls_log)
+    assert result.returncode == 0
+    assert "iteration 1 status: TASK DONE sentinel detected" in log
+    assert "iteration 1 status: ALL TASKS DONE" not in log
+    assert "iteration 2 status: ALL TASKS DONE sentinel detected" in log
+    assert calls.count("exec|specode-loop-echoed-prompt-") == 2
+    assert rm_log.read_text(encoding="utf-8").count("rm|specode-loop-echoed-prompt-") == 2
 
 
 def test_exact_sentinel_lines_are_required_and_false_positive_text_fails(tmp_path: Path, monkeypatch) -> None:
@@ -445,7 +528,9 @@ def test_success_sentinel_overrides_nonzero_sandbox_exit(tmp_path: Path, monkeyp
     assert result.returncode == 0
     assert "TASK DONE sentinel detected; iteration successful (command exit code: 42)" in log
     assert "ALL TASKS DONE sentinel detected; overall run complete (command exit code: 42)" in log
-    assert assert_sandbox_called(calls_log).count("run|specode-loop-nonzero-sentinel-") == 2
+    calls = assert_sandbox_called(calls_log)
+    assert calls.count("create|specode-loop-nonzero-sentinel-") == 2
+    assert calls.count("exec|specode-loop-nonzero-sentinel-") == 2
     assert rm_log.read_text(encoding="utf-8").count("rm|specode-loop-nonzero-sentinel-") == 2
 
 
@@ -501,19 +586,39 @@ def test_prompt_and_codex_argument_order_match_python_command_contract(tmp_path:
     calls = assert_sandbox_called(calls_log)
     assert result.returncode == 0
     assert (
-        f"codex {project} -- exec --dangerously-bypass-approvals-and-sandbox "
+        f"codex exec --dangerously-bypass-approvals-and-sandbox "
         f"--skip-git-repo-check -C {project} -m test-model -c "
         f"model_reasoning_effort=\"high\" -o {project}/.specode_loop-last-message."
     ) in calls
-    assert "Use the project-local specode-do-work skill." in calls
+    assert "Use the do-work skill if it is available in this sandbox." in calls
+    assert "If do-work is unavailable, use the project-local specode-do-work skill." in calls
     assert "PRD document: prd.md" in calls
     assert "Plan document: plan.md" in calls
     assert "Read the PRD document and plan document before choosing work." in calls
     assert "Work on AFK Phases only. Do not work on HITL Phases." in calls
-    assert "Select exactly one undone AFK Phase in the plan document for this run." in calls
-    assert "Mark the completed AFK Phase done in the plan document by changing its checkbox from \"[ ]\" to \"[x]\"." in calls
+    assert "Select exactly one undone AFK Phase in the plan document for this run." not in calls
+    assert "Complete only the selected AFK Phase" not in calls
+    assert "Do not modify runner-managed copied workflow skill files" not in calls
+    assert "Do not run git status or git diff merely to verify copied workflow skill files;" not in calls
+    assert "Do not make a git commit unless the PRD document or plan document explicitly requires it." not in calls
+    assert "Mark only the completed AFK Phase done" not in calls
+    assert "After validation and the plan checkbox update" not in calls
     assert "If no undone AFK Phases remain, output exactly:" in calls
     assert "When the selected AFK Phase is complete and the plan document has been updated, output exactly:" in calls
+
+
+def test_sandbox_exec_does_not_inherit_runner_stdin(tmp_path: Path, monkeypatch) -> None:
+    project = make_project(tmp_path, "stdin-contract")
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_SBX_ECHO_STDIN", "1")
+    write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
+
+    result = run_loop(project, path=path, input_text="SHOULD_NOT_REACH_SANDBOX\n")
+
+    calls = assert_sandbox_called(calls_log)
+    assert result.returncode == 0
+    assert "SHOULD_NOT_REACH_SANDBOX" not in result.stdout
+    assert "SHOULD_NOT_REACH_SANDBOX" not in calls
 
 
 def test_sandbox_names_are_hostname_safe_and_length_bounded(tmp_path: Path, monkeypatch) -> None:
@@ -553,18 +658,39 @@ def test_bundled_skill_is_copied_and_owned_target_is_overwritten(tmp_path: Path,
     assert result.returncode == 0
     assert "Bundled workflow skill synced: specode-do-work:" in result.stdout
     copied_skill_text = copied_skill.read_text(encoding="utf-8")
-    assert "name: specode-do-work" in copied_skill_text
-    assert "Read the PRD document and plan document named by the runner prompt." in copied_skill_text
-    assert "Follow the runner prompt's task-selection rules exactly" in copied_skill_text
-    assert "first undone Markdown checkbox task" not in copied_skill_text
-    assert "Read `prd.md` and `plan.md` in the project root." not in copied_skill_text
-    assert "Do not make a git commit unless `prd.md` or `plan.md` explicitly requires it." not in copied_skill_text
+    assert copied_skill_text == SPECODE_SKILL.joinpath("SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert "name: do-work" in copied_skill_text
     assert "stale local skill" not in copied_skill_text
-    assert "Specode Loop runner workflow" in copied_reference.read_text(encoding="utf-8")
+    assert not copied_reference.exists()
     assert not stale_file.exists()
     assert unrelated_skill.read_text(encoding="utf-8") == "project-owned skill\n"
     assert unrelated_agent_config.read_text(encoding="utf-8") == "project-owned agent config\n"
-    assert f"skill-before-run|{copied_skill}|present" in assert_sandbox_called(calls_log)
+    assert f"skill-before-exec|{copied_skill}|present" in assert_sandbox_called(calls_log)
+
+
+def test_global_do_work_skill_is_copied_into_target_when_available(tmp_path: Path, monkeypatch) -> None:
+    project = make_project(tmp_path, "with-global-do-work")
+    codex_home = make_global_do_work_skill(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
+
+    result = run_loop(project, path=path, codex_home=codex_home)
+
+    copied_skill = project / ".agents" / "skills" / "do-work" / "SKILL.md"
+    copied_notes = project / ".agents" / "skills" / "do-work" / "notes.txt"
+    assert result.returncode == 0
+    assert f"Global workflow skill synced: do-work:{project / '.agents' / 'skills' / 'do-work'}" in result.stdout
+    assert "source:" in result.stdout
+    copied_skill_text = copied_skill.read_text(encoding="utf-8")
+    assert copied_skill_text == (
+        codex_home / "skills" / "do-work" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "name: do-work" in copied_skill_text
+    assert "## Specode Loop Runner Contract" not in copied_skill_text
+    assert copied_notes.read_text(encoding="utf-8") == "copied from global skill\n"
+    assert f"skill-before-exec|{copied_skill}|present" in assert_sandbox_called(calls_log)
 
 
 def test_missing_bundled_skill_source_fails_before_sandbox_execution(tmp_path: Path, monkeypatch) -> None:
@@ -606,19 +732,22 @@ def test_dirty_git_state_warns_and_continues(tmp_path: Path, monkeypatch) -> Non
     assert_sandbox_called(calls_log)
 
 
-def test_hidden_user_skill_state_is_not_consulted(tmp_path: Path, monkeypatch) -> None:
+def test_missing_global_do_work_skill_falls_back_to_bundled_skill(tmp_path: Path, monkeypatch) -> None:
     project = make_project(tmp_path)
     path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
     write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-home"))
 
-    result = run_loop(project, path=path)
+    result = run_loop(project, path=path, codex_home=tmp_path / "missing-codex-home")
 
     copied_skill = project / ".agents" / "skills" / "specode-do-work" / "SKILL.md"
     assert result.returncode == 0
+    assert not (project / ".agents" / "skills" / "do-work").exists()
+    assert "Global workflow skill synced: do-work:" not in result.stdout
     assert copied_skill.read_text(encoding="utf-8") == (SPECODE_SKILL / "SKILL.md").read_text(encoding="utf-8")
     assert "Bundled workflow skill synced: specode-do-work:" in result.stdout
-    assert_sandbox_called(calls_log)
+    calls = assert_sandbox_called(calls_log)
+    assert f"skill-before-exec|{project / '.agents' / 'skills' / 'do-work' / 'SKILL.md'}|missing" in calls
+    assert f"skill-before-exec|{copied_skill}|present" in calls
 
 
 def test_invalid_options_fail_before_sandbox_execution(tmp_path: Path, monkeypatch) -> None:

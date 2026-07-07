@@ -32,6 +32,10 @@ _Avoid_: Marker, status, signal
 The instructions sandboxed Codex follows when selecting, completing, and reporting exactly one plan task during a sandbox iteration.
 _Avoid_: Skill, agent config, local setup
 
-**Bundled Workflow Skill**:
-The versioned `specode-do-work` skill shipped under Specode Loop's `.agents/skills/` directory and copied into a target project before sandbox execution.
+**Preferred Workflow Skill**:
+The host global `do-work` skill that Specode Loop copies into a target project as `.agents/skills/do-work` when it exists, making it available to sandboxed Codex.
+_Avoid_: Project-local skill, copied skill
+
+**Bundled Fallback Workflow Skill**:
+The versioned fallback workflow skill directory shipped at `.agents/skills/specode-do-work` and copied into a target project before sandbox execution for Docker Sandbox runs where a host global `do-work` skill is unavailable. Its `SKILL.md` is kept as an exact copy of the global `do-work` skill source of truth, so the directory is runner-managed as `specode-do-work` while the manifest currently declares `name: do-work`.
 _Avoid_: Global skill, user skill, local skill

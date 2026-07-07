@@ -11,12 +11,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-
 MAX_ITERATIONS_DEFAULT = "10"
+DEFAULT_MODEL = "gpt-5.5"
+DEFAULT_REASONING_EFFORT = "high"
 ALLOWED_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 RUNNER_SKILLS_REL = Path(".agents") / "skills"
-SPECODE_REQUIRED_SKILLS = ("specode-do-work",)
-SPECODE_WORKFLOW_SKILL = "specode-do-work"
+HOST_SKILLS_REL = Path("skills")
+PREFERRED_WORKFLOW_SKILL = "do-work"
+FALLBACK_WORKFLOW_SKILL = "specode-do-work"
+SPECODE_REQUIRED_SKILLS = (FALLBACK_WORKFLOW_SKILL,)
 DEFAULT_PRD_DOCUMENT = Path("prd.md")
 DEFAULT_PLAN_DOCUMENT = Path("plan.md")
 TASK_DONE_SENTINEL = "TASK DONE"
@@ -28,8 +31,8 @@ FAILURE_EXCERPT_LINES = 30
 class Options:
     project_dir: str
     max_iterations: str = MAX_ITERATIONS_DEFAULT
-    model: str = ""
-    reasoning_effort: str = ""
+    model: str = DEFAULT_MODEL
+    reasoning_effort: str = DEFAULT_REASONING_EFFORT
     prd: str = str(DEFAULT_PRD_DOCUMENT)
     plan: str = str(DEFAULT_PLAN_DOCUMENT)
 
@@ -63,8 +66,8 @@ Options:
   --prd PATH               PRD document path (default: prd.md)
   --plan PATH              Plan document path (default: plan.md)
   --max-iterations N       Maximum sandbox iterations to run (default: 10)
-  --model MODEL            Optional model for the sandboxed Codex run
-  --effort EFFORT          Optional reasoning effort: minimal, low, medium, high, xhigh
+  --model MODEL            Model for the sandboxed Codex run (default: gpt-5.5)
+  --effort EFFORT          Reasoning effort: minimal, low, medium, high, xhigh (default: high)
   --reasoning-effort EFFORT
                            Alias for --effort
   -h, --help               Show this help
@@ -143,7 +146,11 @@ def parse_args(argv: list[str]) -> Options:
 
 
 def validate_positive_integer(name: str, value: str) -> None:
-    if not value or value.startswith("0") or any(char < "0" or char > "9" for char in value):
+    if (
+        not value
+        or value.startswith("0")
+        or any(char < "0" or char > "9" for char in value)
+    ):
         fail(f"{name} must be a positive integer")
 
 
@@ -165,9 +172,15 @@ def resolve_project_dir(project_dir: str) -> Path:
     return project_abs
 
 
-def resolve_planning_document(project_abs: Path, role: str, value: str) -> tuple[Path, Path]:
+def resolve_planning_document(
+    project_abs: Path, role: str, value: str
+) -> tuple[Path, Path]:
     configured_path = Path(value)
-    selected_path = configured_path if configured_path.is_absolute() else project_abs / configured_path
+    selected_path = (
+        configured_path
+        if configured_path.is_absolute()
+        else project_abs / configured_path
+    )
 
     try:
         resolved_path = selected_path.resolve(strict=True)
@@ -182,13 +195,19 @@ def resolve_planning_document(project_abs: Path, role: str, value: str) -> tuple
     try:
         role_path = resolved_path.relative_to(project_abs)
     except ValueError:
-        fail(f"selected {role} document must resolve inside the Target Project: {selected_path}")
+        fail(
+            f"selected {role} document must resolve inside the Target Project: {selected_path}"
+        )
     return resolved_path, role_path
 
 
-def resolve_planning_documents(project_abs: Path, options: Options) -> PlanningDocuments:
+def resolve_planning_documents(
+    project_abs: Path, options: Options
+) -> PlanningDocuments:
     prd_abs, prd_role_path = resolve_planning_document(project_abs, "PRD", options.prd)
-    plan_abs, plan_role_path = resolve_planning_document(project_abs, "plan", options.plan)
+    plan_abs, plan_role_path = resolve_planning_document(
+        project_abs, "plan", options.plan
+    )
 
     return PlanningDocuments(
         prd_abs=prd_abs,
@@ -202,7 +221,39 @@ def runner_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def sync_required_bundled_skills(project_abs: Path, root: Path | None = None) -> list[str]:
+def host_codex_home() -> Path:
+    configured_home = os.environ.get("CODEX_HOME")
+    return (
+        Path(configured_home).expanduser()
+        if configured_home
+        else Path.home() / ".codex"
+    )
+
+
+def copy_skill_directory(source_dir: Path, target_dir: Path) -> None:
+    if source_dir.resolve() != target_dir.resolve():
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        if target_dir.exists():
+            if target_dir.is_dir() and not target_dir.is_symlink():
+                shutil.rmtree(target_dir)
+            else:
+                target_dir.unlink()
+        shutil.copytree(source_dir, target_dir)
+
+
+def sync_preferred_global_skill(project_abs: Path) -> str | None:
+    source_dir = host_codex_home() / HOST_SKILLS_REL / PREFERRED_WORKFLOW_SKILL
+    if not source_dir.is_dir():
+        return None
+
+    target_dir = project_abs / RUNNER_SKILLS_REL / PREFERRED_WORKFLOW_SKILL
+    copy_skill_directory(source_dir, target_dir)
+    return f"{PREFERRED_WORKFLOW_SKILL}:{target_dir} (source: {source_dir})"
+
+
+def sync_required_bundled_skills(
+    project_abs: Path, root: Path | None = None
+) -> list[str]:
     root = runner_root() if root is None else root
     source_root = root / RUNNER_SKILLS_REL
     target_root = project_abs / RUNNER_SKILLS_REL
@@ -215,21 +266,15 @@ def sync_required_bundled_skills(project_abs: Path, root: Path | None = None) ->
         if not source_dir.is_dir():
             fail(f"bundled workflow skill directory is missing: {source_dir}")
 
-        if source_dir.resolve() != target_dir.resolve():
-            target_dir.parent.mkdir(parents=True, exist_ok=True)
-            if target_dir.exists():
-                if target_dir.is_dir() and not target_dir.is_symlink():
-                    shutil.rmtree(target_dir)
-                else:
-                    target_dir.unlink()
-            shutil.copytree(source_dir, target_dir)
-
+        copy_skill_directory(source_dir, target_dir)
         synced_skills.append(f"{skill_name}:{target_dir}")
 
     return synced_skills
 
 
-def git_command(project_abs: Path, *args: str, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
+def git_command(
+    project_abs: Path, *args: str, capture_output: bool = False
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(project_abs), *args],
         stdout=subprocess.PIPE if capture_output else subprocess.DEVNULL,
@@ -245,20 +290,31 @@ def warn_for_existing_git_state(project_abs: Path) -> None:
         warn(f"{project_abs} is not inside a Git work tree. Continuing.")
         return
 
-    has_unstaged_changes = git_command(project_abs, "diff", "--quiet", "--ignore-submodules", "--").returncode == 1
-    untracked = git_command(project_abs, "ls-files", "--others", "--exclude-standard", capture_output=True)
+    has_unstaged_changes = (
+        git_command(
+            project_abs, "diff", "--quiet", "--ignore-submodules", "--"
+        ).returncode
+        == 1
+    )
+    untracked = git_command(
+        project_abs, "ls-files", "--others", "--exclude-standard", capture_output=True
+    )
     if untracked.stdout:
         has_unstaged_changes = True
 
     if has_unstaged_changes:
         warn(f"{project_abs} has existing unstaged changes. Continuing.")
 
-    staged = git_command(project_abs, "diff", "--cached", "--quiet", "--ignore-submodules", "--")
+    staged = git_command(
+        project_abs, "diff", "--cached", "--quiet", "--ignore-submodules", "--"
+    )
     if staged.returncode == 1:
         warn(f"{project_abs} has existing staged changes. Continuing.")
 
 
-def preflight(options: Options) -> tuple[Path, PlanningDocuments, list[str]]:
+def preflight(
+    options: Options,
+) -> tuple[Path, PlanningDocuments, str | None, list[str]]:
     validate_positive_integer("--max-iterations", options.max_iterations)
     validate_reasoning_effort(options.reasoning_effort)
 
@@ -269,6 +325,7 @@ def preflight(options: Options) -> tuple[Path, PlanningDocuments, list[str]]:
     planning_documents = resolve_planning_documents(project_abs, options)
 
     warn_for_existing_git_state(project_abs)
+    preferred_synced_skill = sync_preferred_global_skill(project_abs)
     synced_skills = sync_required_bundled_skills(project_abs)
 
     print("Specode Loop preflight passed.")
@@ -276,6 +333,8 @@ def preflight(options: Options) -> tuple[Path, PlanningDocuments, list[str]]:
     print("Workspace mode: direct (sandbox edits apply to this working tree)")
     print(f"PRD document: {planning_documents.prd_abs}")
     print(f"Plan document: {planning_documents.plan_abs}")
+    if preferred_synced_skill is not None:
+        print(f"Global workflow skill synced: {preferred_synced_skill}")
     for synced_skill in synced_skills:
         print(f"Bundled workflow skill synced: {synced_skill}")
     print(f"Max iterations: {options.max_iterations}")
@@ -287,7 +346,7 @@ def preflight(options: Options) -> tuple[Path, PlanningDocuments, list[str]]:
         print(f"Reasoning effort: {options.reasoning_effort}")
     else:
         print("Reasoning effort: Codex/project default")
-    return project_abs, planning_documents, synced_skills
+    return project_abs, planning_documents, preferred_synced_skill, synced_skills
 
 
 def write_preflight_log(
@@ -295,16 +354,33 @@ def write_preflight_log(
     project_abs: Path,
     planning_documents: PlanningDocuments,
     options: Options,
+    preferred_synced_skill: str | None,
     synced_skills: list[str],
 ) -> None:
     log_line(state, "Specode Loop preflight passed.", terminal=False)
     log_line(state, f"Project: {project_abs}", terminal=False)
-    log_line(state, "Workspace mode: direct (sandbox edits apply to this working tree)", terminal=False)
+    log_line(
+        state,
+        "Workspace mode: direct (sandbox edits apply to this working tree)",
+        terminal=False,
+    )
     log_line(state, f"PRD document: {planning_documents.prd_abs}", terminal=False)
     log_line(state, f"Plan document: {planning_documents.plan_abs}", terminal=False)
+    if preferred_synced_skill is not None:
+        log_line(
+            state,
+            f"Global workflow skill synced: {preferred_synced_skill}",
+            terminal=False,
+        )
     for synced_skill in synced_skills:
-        log_line(state, f"Bundled workflow skill synced: {synced_skill}", terminal=False)
-    log_line(state, f"Verbose transcript logging: {os.environ.get('SPECODE_LOOP_VERBOSE', '0')}", terminal=False)
+        log_line(
+            state, f"Bundled workflow skill synced: {synced_skill}", terminal=False
+        )
+    log_line(
+        state,
+        f"Verbose transcript logging: {os.environ.get('SPECODE_LOOP_VERBOSE', '0')}",
+        terminal=False,
+    )
     log_line(state, f"Max iterations: {options.max_iterations}", terminal=False)
     if options.model:
         log_line(state, f"Model: {options.model}", terminal=False)
@@ -335,7 +411,8 @@ def build_prompt(project_abs: Path, planning_documents: PlanningDocuments) -> st
 Project root:
 {project_abs}
 
-Use the project-local {SPECODE_WORKFLOW_SKILL} skill.
+Use the {PREFERRED_WORKFLOW_SKILL} skill if it is available in this sandbox.
+If {PREFERRED_WORKFLOW_SKILL} is unavailable, use the project-local {FALLBACK_WORKFLOW_SKILL} skill.
 
 PRD document: {planning_documents.prd_role_path}
 Plan document: {planning_documents.plan_role_path}
@@ -343,10 +420,6 @@ Plan document: {planning_documents.plan_role_path}
 Read the PRD document and plan document before choosing work.
 
 Work on AFK Phases only. Do not work on HITL Phases.
-
-Select exactly one undone AFK Phase in the plan document for this run.
-Complete only the selected AFK Phase.
-Mark the completed AFK Phase done in the plan document by changing its checkbox from "[ ]" to "[x]".
 
 If no undone AFK Phases remain, output exactly:
 {ALL_TASKS_DONE_SENTINEL}
@@ -360,7 +433,9 @@ Blocked or incomplete work must not output a success sentinel.
 
 def make_temp_output(iteration: int) -> Path:
     tmp_dir = os.environ.get("TMPDIR") or "/tmp"
-    handle = tempfile.NamedTemporaryFile(prefix=f"specode_loop.{iteration}.", dir=tmp_dir, delete=False)
+    handle = tempfile.NamedTemporaryFile(
+        prefix=f"specode_loop.{iteration}.", dir=tmp_dir, delete=False
+    )
     handle.close()
     return Path(handle.name)
 
@@ -373,15 +448,21 @@ def cleanup_temp_output(state: LoopState) -> None:
         setattr(state, path_attr, None)
 
 
-def cleanup_active_sandbox(state: LoopState, *, terminal: bool = False, report_no_active: bool = False) -> None:
+def cleanup_active_sandbox(
+    state: LoopState, *, terminal: bool = False, report_no_active: bool = False
+) -> None:
     if not state.active_sandbox:
         if report_no_active:
-            log_line(state, "Sandbox cleanup: no active sandbox to remove.", terminal=terminal)
+            log_line(
+                state,
+                "Sandbox cleanup: no active sandbox to remove.",
+                terminal=terminal,
+            )
         return
 
     sandbox_name = state.active_sandbox
     result = subprocess.run(
-        ["sbx", "rm", sandbox_name],
+        ["sbx", "rm", "--force", sandbox_name],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         text=True,
@@ -409,11 +490,20 @@ def install_interrupt_handlers(state: LoopState) -> None:
 def contains_exact_line(path: Path | None, sentinel: str) -> bool:
     if path is None or not path.exists():
         return False
-    return any(line.rstrip("\n") == sentinel for line in path.read_text(encoding="utf-8").splitlines())
+    return any(
+        line.rstrip("\n") == sentinel
+        for line in path.read_text(encoding="utf-8").splitlines()
+    )
 
 
 def sentinel_detected(state: LoopState, sentinel: str) -> bool:
-    return contains_exact_line(state.temp_output, sentinel) or contains_exact_line(state.last_message_output, sentinel)
+    if (
+        state.last_message_output is not None
+        and state.last_message_output.exists()
+        and state.last_message_output.stat().st_size > 0
+    ):
+        return contains_exact_line(state.last_message_output, sentinel)
+    return contains_exact_line(state.temp_output, sentinel)
 
 
 def append_last_message(state: LoopState) -> None:
@@ -423,7 +513,9 @@ def append_last_message(state: LoopState) -> None:
         return
 
     if os.environ.get("SPECODE_LOOP_VERBOSE", "0") == "1":
-        log_line(state, "===== Codex final message captured from --output-last-message =====")
+        log_line(
+            state, "===== Codex final message captured from --output-last-message ====="
+        )
         content = state.last_message_output.read_text(encoding="utf-8")
         print(content, end="")
         if not content.endswith("\n"):
@@ -482,6 +574,7 @@ def stream_sandbox_command(command: list[str], state: LoopState) -> int:
     with state.temp_output.open("w", encoding="utf-8") as temp_output:
         process = subprocess.Popen(
             command,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -508,7 +601,9 @@ def run_single_task_iteration(
     state.active_sandbox = new_sandbox_name(project_abs, iteration)
     sandbox_name = state.active_sandbox
     state.temp_output = make_temp_output(iteration)
-    state.last_message_output = project_abs / f".specode_loop-last-message.{iteration}.{os.getpid()}"
+    state.last_message_output = (
+        project_abs / f".specode_loop-last-message.{iteration}.{os.getpid()}"
+    )
     if state.last_message_output.exists():
         state.last_message_output.unlink()
 
@@ -522,18 +617,39 @@ def run_single_task_iteration(
     if options.model:
         codex_args.extend(["-m", options.model])
     if options.reasoning_effort:
-        codex_args.extend(["-c", f'model_reasoning_effort="{options.reasoning_effort}"'])
-    codex_args.extend(["-o", str(state.last_message_output), build_prompt(project_abs, planning_documents)])
+        codex_args.extend(
+            ["-c", f'model_reasoning_effort="{options.reasoning_effort}"']
+        )
+    codex_args.extend(
+        [
+            "-o",
+            str(state.last_message_output),
+            build_prompt(project_abs, planning_documents),
+        ]
+    )
 
     log_line(state)
     log_line(
         state,
         f"===== Specode Loop iteration {iteration}/{options.max_iterations} | {timestamp()} | sandbox: {sandbox_name} =====",
     )
-    log_line(state, "Starting non-interactive Codex run in Docker Sandbox direct workspace mode.")
+    log_line(
+        state,
+        "Starting non-interactive Codex run in Docker Sandbox direct workspace mode.",
+    )
 
-    command = ["sbx", "run", "--name", sandbox_name, "codex", str(project_abs), "--", *codex_args]
-    command_status = stream_sandbox_command(command, state)
+    create_command = [
+        "sbx",
+        "create",
+        "--name",
+        sandbox_name,
+        "codex",
+        str(project_abs),
+    ]
+    command_status = stream_sandbox_command(create_command, state)
+    if command_status == 0:
+        exec_command = ["sbx", "exec", sandbox_name, "codex", *codex_args]
+        command_status = stream_sandbox_command(exec_command, state)
     append_last_message(state)
 
     if sentinel_detected(state, ALL_TASKS_DONE_SENTINEL):
@@ -570,9 +686,16 @@ def run_single_task_iteration(
     return False
 
 
-def run_loop(project_abs: Path, planning_documents: PlanningDocuments, options: Options, state: LoopState) -> int:
+def run_loop(
+    project_abs: Path,
+    planning_documents: PlanningDocuments,
+    options: Options,
+    state: LoopState,
+) -> int:
     for iteration in range(1, int(options.max_iterations) + 1):
-        if run_single_task_iteration(project_abs, planning_documents, options, state, iteration):
+        if run_single_task_iteration(
+            project_abs, planning_documents, options, state, iteration
+        ):
             cleanup_active_sandbox(state)
             if state.last_sentinel == "all":
                 return 0
@@ -598,9 +721,18 @@ def main(argv: list[str] | None = None) -> int:
     state = LoopState()
     install_interrupt_handlers(state)
     try:
-        project_abs, planning_documents, synced_skills = preflight(options)
+        project_abs, planning_documents, preferred_synced_skill, synced_skills = (
+            preflight(options)
+        )
         state.log_file = project_abs / "specode_loop.log"
-        write_preflight_log(state, project_abs, planning_documents, options, synced_skills)
+        write_preflight_log(
+            state,
+            project_abs,
+            planning_documents,
+            options,
+            preferred_synced_skill,
+            synced_skills,
+        )
         return run_loop(project_abs, planning_documents, options, state)
     finally:
         cleanup_temp_output(state)

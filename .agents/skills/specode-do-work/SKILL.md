@@ -1,46 +1,42 @@
 ---
-name: specode-do-work
-description: "Specode Loop runner workflow for completing exactly one planned task in a sandbox iteration."
+name: do-work
+description: "Execute a unit of work end-to-end: plan, implement, validate with typecheck and tests. Use when user wants to do work, build a feature, fix a bug, or implement a phase from a plan."
 ---
 
-# Specode Do Work
+# Do Work
 
-Execute one Specode Loop task end-to-end inside the sandbox.
+Execute a **ONE** complete unit of work: plan it, build it, validate it, commit it.
+Take first updone Phase and implement it.
 
 ## Workflow
 
 ### 1. Understand the task
 
-Read the PRD document and plan document named by the runner prompt. Follow the runner prompt's task-selection rules exactly, including any AFK/HITL boundaries, and select exactly one eligible undone plan task.
+Read any referenced plan or PRD. Explore the codebase to understand the relevant files, patterns, and conventions. If the task is ambiguous, ask the user to clarify scope before proceeding.
 
-If there are no eligible undone plan tasks, output exactly:
+### 2. Plan the implementation (optional)
 
-```text
-ALL TASKS DONE
-```
+If the task has not already been planned, create a plan for it.
 
-Do no task work in that case.
+### 3. Implement
 
-### 2. Implement
+**For backend code**: use red/green/refactor, one test at a time in a tracer-bullet style.
+Core principle: Tests should verify behavior through public interfaces, not implementation details. Code can change entirely; tests shouldn't.
 
-Complete only the selected task. Work directly in the project working tree.
+1. Write a single failing test for the smallest vertical slice of behavior
+2. Run the test — confirm it fails (red)
+3. Write the minimum code to make it pass (green)
+4. Repeat from step 1 for the next slice of behavior
+5. Refactor if needed while keeping tests green
 
-Do not modify runner-managed copied workflow skill files under `.agents/skills/specode-do-work` as part of task work.
+Each test should target one thin vertical slice through the system. Do not write all tests upfront — write one, make it pass, then move to the next.
 
-Do not make a git commit unless the PRD document or plan document explicitly requires it.
+**For frontend code**: implement directly without TDD.
 
-### 3. Validate
+### 4. Validate
 
-Run the relevant feedback loops for the task, such as tests, linters, typecheckers, or direct command checks. Fix issues until the selected task is genuinely complete.
+Run the feedback loops and fix any issues. Repeat until all pass cleanly.
 
-### 4. Update the plan and report
+Run typecheckers, linters and tests.
 
-Mark the completed task done in the plan document by changing its checkbox from `[ ]` to `[x]`.
-
-When the selected task is complete and the plan document has been updated, output exactly:
-
-```text
-TASK DONE
-```
-
-Do not output `TASK DONE` unless the selected task is complete and the plan document was updated.
+Mark task/phase, acceptance criteria as complete when all tests pass.
