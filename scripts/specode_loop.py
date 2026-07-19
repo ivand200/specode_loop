@@ -12,9 +12,12 @@ from datetime import datetime
 from pathlib import Path
 
 MAX_ITERATIONS_DEFAULT = "10"
-DEFAULT_MODEL = "gpt-5.5"
-DEFAULT_REASONING_EFFORT = "high"
+DEFAULT_MODEL = "gpt-5.6-sol"
+DEFAULT_REASONING_EFFORT = "medium"
 ALLOWED_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
+DEFAULT_AUTH_MODE = "oauth"
+ALLOWED_AUTH_MODES = {"oauth", "api-key"}
+API_KEY_ENVIRONMENT_VARIABLES = ("OPENAI_API_KEY", "CODEX_API_KEY")
 RUNNER_SKILLS_REL = Path(".agents") / "skills"
 HOST_SKILLS_REL = Path("skills")
 PREFERRED_WORKFLOW_SKILL = "do-work"
@@ -33,6 +36,7 @@ class Options:
     max_iterations: str = MAX_ITERATIONS_DEFAULT
     model: str = DEFAULT_MODEL
     reasoning_effort: str = DEFAULT_REASONING_EFFORT
+    auth_mode: str = DEFAULT_AUTH_MODE
     prd: str = str(DEFAULT_PRD_DOCUMENT)
     plan: str = str(DEFAULT_PLAN_DOCUMENT)
 
@@ -66,8 +70,9 @@ Options:
   --prd PATH               PRD document path (default: prd.md)
   --plan PATH              Plan document path (default: plan.md)
   --max-iterations N       Maximum sandbox iterations to run (default: 10)
-  --model MODEL            Model for the sandboxed Codex run (default: gpt-5.5)
-  --effort EFFORT          Reasoning effort: minimal, low, medium, high, xhigh (default: high)
+  --auth MODE              OpenAI authentication: oauth, api-key (default: oauth)
+  --model MODEL            Model for the sandboxed Codex run (default: gpt-5.6-sol)
+  --effort EFFORT          Reasoning effort: minimal, low, medium, high, xhigh (default: medium)
   --reasoning-effort EFFORT
                            Alias for --effort
   -h, --help               Show this help
@@ -131,6 +136,11 @@ def parse_args(argv: list[str]) -> Options:
                 fail("--model requires a value")
             options.model = argv[index + 1]
             index += 2
+        elif arg == "--auth":
+            if index + 1 >= len(argv):
+                fail("--auth requires a value")
+            options.auth_mode = argv[index + 1]
+            index += 2
         elif arg in {"--effort", "--reasoning-effort"}:
             if index + 1 >= len(argv):
                 fail(f"{arg} requires a value")
@@ -157,6 +167,62 @@ def validate_positive_integer(name: str, value: str) -> None:
 def validate_reasoning_effort(value: str) -> None:
     if value and value not in ALLOWED_REASONING_EFFORTS:
         fail("--effort must be one of: minimal, low, medium, high, xhigh")
+
+
+def validate_auth_mode(value: str) -> None:
+    if value not in ALLOWED_AUTH_MODES:
+        fail("--auth must be one of: oauth, api-key")
+
+
+def sbx_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    for variable in API_KEY_ENVIRONMENT_VARIABLES:
+        environment.pop(variable, None)
+    return environment
+
+
+def detect_global_openai_auth_mode() -> str:
+    result = subprocess.run(
+        ["sbx", "secret", "ls", "-g", "--service", "openai"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+        env=sbx_environment(),
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        fail(f"could not inspect Docker Sandbox OpenAI credentials{suffix}")
+
+    openai_rows = [
+        line for line in result.stdout.splitlines() if "openai" in line.lower()
+    ]
+    if not openai_rows:
+        fail(
+            "no global OpenAI credential is configured; OAuth is the default. "
+            "Run: sbx secret set -g openai --oauth"
+        )
+
+    secret_field = openai_rows[-1].split()[-1].lower()
+    return "api-key" if secret_field.startswith(("sk-", "sk_")) else "oauth"
+
+
+def validate_configured_auth_mode(requested_mode: str) -> None:
+    configured_mode = detect_global_openai_auth_mode()
+    if requested_mode == "oauth" and configured_mode == "api-key":
+        fail(
+            "OAuth authentication is required by default, but Docker Sandbox has "
+            "an OpenAI API key configured. Replace it with OAuth using: "
+            "sbx secret set -g openai --oauth. To deliberately use the stored "
+            "API key, pass --auth api-key."
+        )
+    if requested_mode == "api-key" and configured_mode != "api-key":
+        fail(
+            "API-key authentication was requested, but Docker Sandbox does not "
+            "have an OpenAI API key configured. Run: sbx secret set -g openai"
+        )
 
 
 def resolve_project_dir(project_dir: str) -> Path:
@@ -317,12 +383,14 @@ def preflight(
 ) -> tuple[Path, PlanningDocuments, str | None, list[str]]:
     validate_positive_integer("--max-iterations", options.max_iterations)
     validate_reasoning_effort(options.reasoning_effort)
+    validate_auth_mode(options.auth_mode)
 
     if shutil.which("sbx") is None:
         fail("Docker Sandbox CLI 'sbx' is not installed or not on PATH")
 
     project_abs = resolve_project_dir(options.project_dir)
     planning_documents = resolve_planning_documents(project_abs, options)
+    validate_configured_auth_mode(options.auth_mode)
 
     warn_for_existing_git_state(project_abs)
     preferred_synced_skill = sync_preferred_global_skill(project_abs)
@@ -338,6 +406,10 @@ def preflight(
     for synced_skill in synced_skills:
         print(f"Bundled workflow skill synced: {synced_skill}")
     print(f"Max iterations: {options.max_iterations}")
+    if options.auth_mode == "oauth":
+        print("Authentication: OAuth")
+    else:
+        print("Authentication: API key (explicit opt-in)")
     if options.model:
         print(f"Model: {options.model}")
     else:
@@ -382,6 +454,10 @@ def write_preflight_log(
         terminal=False,
     )
     log_line(state, f"Max iterations: {options.max_iterations}", terminal=False)
+    if options.auth_mode == "oauth":
+        log_line(state, "Authentication: OAuth", terminal=False)
+    else:
+        log_line(state, "Authentication: API key (explicit opt-in)", terminal=False)
     if options.model:
         log_line(state, f"Model: {options.model}", terminal=False)
     else:
@@ -411,20 +487,24 @@ def build_prompt(project_abs: Path, planning_documents: PlanningDocuments) -> st
 Project root:
 {project_abs}
 
-Use the {PREFERRED_WORKFLOW_SKILL} skill if it is available in this sandbox.
-If {PREFERRED_WORKFLOW_SKILL} is unavailable, use the project-local {FALLBACK_WORKFLOW_SKILL} skill.
+Invoke the ${PREFERRED_WORKFLOW_SKILL} skill if it is available in this sandbox.
+If the preferred copy is unavailable, invoke ${PREFERRED_WORKFLOW_SKILL} from the project-local .agents/skills/{FALLBACK_WORKFLOW_SKILL} directory.
 
 PRD document: {planning_documents.prd_role_path}
 Plan document: {planning_documents.plan_role_path}
 
+The PRD document corresponds to output from the global $to-spec skill.
+The plan document corresponds to output from the global $to-tickets skill.
+For $do-work, treat each unchecked numbered ticket in a $to-tickets plan as a Phase.
+
 Read the PRD document and plan document before choosing work.
 
-Work on AFK Phases only. Do not work on HITL Phases.
+Work on AFK Plan Tasks only. Do not work on HITL Plan Tasks.
 
-If no undone AFK Phases remain, output exactly:
+If no undone AFK Plan Tasks remain, output exactly:
 {ALL_TASKS_DONE_SENTINEL}
 
-When the selected AFK Phase is complete and the plan document has been updated, output exactly:
+When the selected AFK Plan Task is complete and the plan document has been updated, output exactly:
 {TASK_DONE_SENTINEL}
 
 Blocked or incomplete work must not output a success sentinel.
@@ -467,6 +547,7 @@ def cleanup_active_sandbox(
         stderr=subprocess.DEVNULL,
         text=True,
         check=False,
+        env=sbx_environment(),
     )
     state.active_sandbox = ""
     if result.returncode == 0:
@@ -578,6 +659,7 @@ def stream_sandbox_command(command: list[str], state: LoopState) -> int:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=sbx_environment(),
         )
         assert process.stdout is not None
         for line in process.stdout:

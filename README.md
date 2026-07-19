@@ -6,13 +6,13 @@ task at a time.
 A Target Project needs two Planning Documents:
 
 - a PRD document describing the requested behavior
-- a plan document with ordered Markdown checkbox phases
+- a plan document with ordered Markdown checkbox Plan Tasks
 
 By default those files are `prd.md` and `plan.md`. Use `--prd` and `--plan`
 when a project uses different filenames.
 
 During each sandbox iteration, Codex must finish exactly one eligible undone AFK
-phase, mark only that phase complete, and print one success sentinel:
+Plan Task, mark only that Plan Task complete, and print one success sentinel:
 
 - `TASK DONE`
 - `ALL TASKS DONE`
@@ -30,19 +30,30 @@ Check the sandbox CLI:
 command -v sbx
 ```
 
-For ChatGPT/Codex subscription auth, prefer Docker Sandbox OAuth:
+Specode Loop uses ChatGPT/Codex OAuth by default. Configure Docker Sandbox
+OAuth on the host before running the loop:
 
 ```bash
 unset OPENAI_API_KEY CODEX_API_KEY
 sbx secret set -g openai --oauth
-sbx run codex .
+sbx secret ls -g --service openai
 ```
 
-For API-key billing, configure Docker's OpenAI secret instead:
+The runner verifies the stored global OpenAI credential before creating a
+sandbox. In the default OAuth mode it refuses a stored API key and removes
+`OPENAI_API_KEY` and `CODEX_API_KEY` from every `sbx` subprocess environment,
+preventing an inherited key from silently selecting API-key billing.
+
+For deliberate API-key billing, configure Docker's OpenAI secret and opt in on
+the runner command:
 
 ```bash
 sbx secret set -g openai
+uv run python scripts/specode_loop.py "$DEMO_PROJECT" --auth api-key
 ```
+
+Docker Sandbox stores either OAuth or an API key for the global `openai`
+service; changing the stored credential affects newly created sandboxes.
 
 ## Quick Start
 
@@ -81,9 +92,10 @@ Options:
 | `--prd PATH` | `prd.md` | PRD document path inside the Target Project |
 | `--plan PATH` | `plan.md` | Plan document path inside the Target Project |
 | `--max-iterations N` | `10` | Maximum sandbox iterations |
-| `--model MODEL` | `gpt-5.5` | Codex model passed to `codex exec -m` |
-| `--effort EFFORT` | `high` | Reasoning effort: `minimal`, `low`, `medium`, `high`, `xhigh` |
-| `--reasoning-effort EFFORT` | `high` | Alias for `--effort` |
+| `--auth MODE` | `oauth` | OpenAI auth mode: `oauth` or explicit `api-key` opt-in |
+| `--model MODEL` | `gpt-5.6-sol` | Codex model passed to `codex exec -m` |
+| `--effort EFFORT` | `medium` | Reasoning effort: `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `--reasoning-effort EFFORT` | `medium` | Alias for `--effort` |
 
 Custom Planning Document paths are resolved inside `PROJECT_DIR`:
 
@@ -109,9 +121,15 @@ When found, the runner copies it into the Target Project as
 The repository also ships a fallback workflow skill at
 `.agents/skills/specode-do-work`. Before each sandbox run, the runner copies
 that directory into the Target Project as `.agents/skills/specode-do-work`.
+Both repository-owned directories are complete copies of the global
+`~/.codex/skills/do-work` source of truth.
 
-The sandbox prompt tells Codex to use `do-work` first, then fall back to the
-project-local `specode-do-work` skill when `do-work` is unavailable.
+The sandbox prompt explicitly invokes `$do-work` first, then falls back to the
+same `$do-work` manifest in the project-local `.agents/skills/specode-do-work`
+directory when the preferred copy is unavailable. It also identifies the PRD
+document as `$to-spec` output and the plan document as `$to-tickets` output. The
+bundled `examples/basic` Target Project follows those Planning Document formats
+for real E2E coverage.
 
 ## Logs
 
@@ -136,6 +154,18 @@ access, and real Codex execution are available:
 ```bash
 unset OPENAI_API_KEY CODEX_API_KEY
 bash tests/specode_loop_python-e2e.sh
+```
+
+Run a focused one-request authentication E2E against the globally configured
+Docker Sandbox OpenAI credential:
+
+```bash
+# OAuth (default)
+bash tests/specode_loop_auth-e2e.sh
+
+# Deliberate API-key mode
+SPECODE_LOOP_AUTH_E2E_MODE=api-key \
+  bash tests/specode_loop_auth-e2e.sh
 ```
 
 ## More Detail

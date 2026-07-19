@@ -3,7 +3,7 @@
 Specode Loop needs a small but realistic Target Project for demos and real e2e
 tests. A one-file fixture proves that a Sandbox Iteration can write text, but it
 does not prove that Codex can follow Planning Documents across multiple
-dependent AFK phases, carry request context forward, produce a response, and
+dependent AFK tickets, carry request context forward, produce a response, and
 leave behind behavior that can be checked from outside the implementation.
 
 The example must stay simple enough for reliable real Codex execution while
@@ -13,9 +13,10 @@ Specode Loop work.
 ## Solution
 
 Provide a deterministic request/response example Target Project. The PRD uses
-the standard planning shape, and the plan contains four AFK tracer-bullet phases.
-Each Sandbox Iteration completes one narrow request/response slice and marks only
-that phase done. The finished Target Project contains a request artifact, a
+the `$to-spec` structure, and the plan uses the `$to-tickets` structure with four
+AFK tracer-bullet tickets. Each Sandbox Iteration completes one narrow
+request/response slice and marks only that ticket done. The finished Target
+Project contains a request artifact, a
 response artifact, a reviewable transcript, and an executable verification
 command that proves the final behavior through a single external seam.
 
@@ -24,7 +25,7 @@ command that proves the final behavior through a single external seam.
 1. As a Specode Loop maintainer, I want the example PRD to use the standard PRD
    structure, so that the real e2e path exercises realistic Planning Documents.
 2. As a Specode Loop maintainer, I want the plan to contain four dependent AFK
-   phases, so that repeated Sandbox Iterations prove state carries forward
+   tickets, so that repeated Sandbox Iterations prove state carries forward
    across more than a single task.
 3. As a Specode Loop maintainer, I want the example to model a request and a
    response, so that integration tests verify a realistic interaction instead of
@@ -39,7 +40,7 @@ command that proves the final behavior through a single external seam.
 7. As a Specode Loop user, I want the demo project to avoid package managers,
    network access, databases, and external services, so that sandboxed work stays
    local and predictable.
-8. As a Specode Loop user, I want each phase to be independently understandable,
+8. As a Specode Loop user, I want each ticket to be independently understandable,
    so that the project log and plan checkboxes explain what happened during each
    Sandbox Iteration.
 9. As a real e2e test maintainer, I want the fixture to expose a single
@@ -55,7 +56,7 @@ command that proves the final behavior through a single external seam.
   default filenames.
 - The request/response example is represented by plain text artifacts and a
   shell verification command.
-- The first phase creates the request contract, and every later phase depends on
+- The first ticket creates the request contract, and every later ticket depends on
   that request context.
 - The response is deterministic and intentionally short, making it suitable for
   real Codex execution and exact e2e assertions.
@@ -83,7 +84,7 @@ Module/interface sketch:
 
 ```mermaid
 flowchart LR
-  Loop[Specode Loop] -->|Planning Document roles| Plan[AFK tracer-bullet plan]
+  Loop[Specode Loop] -->|Planning Document roles| Plan[AFK tracer-bullet tickets]
   Plan -->|Sandbox Iteration| Artifacts[Request and response artifacts]
   Artifacts -->|External seam| Verify[Verification command]
   Verify -->|Success output| E2E[Real e2e harness]
@@ -128,13 +129,13 @@ Interface: Verification command, stories 5, 9
 - Network access, dependency installation, package managers, databases, APIs, and
   browser UI.
 - Git commits or pull request creation.
-- Any HITL phase that would prevent the real e2e harness from completing the
+- Any HITL ticket that would prevent the real e2e harness from completing the
   example automatically.
 - Modifying runner-managed workflow skill files.
 
 ## Further Notes
 
 This fixture is intentionally small and literal. Its job is to make each
-phase-level Sandbox Iteration observable, deterministic, and easy to verify while
-keeping the Planning Documents close to the `to-prd` and `prd-to-plan` formats
-used for real work in this repository.
+ticket-level Sandbox Iteration observable, deterministic, and easy to verify
+while keeping the Planning Documents close to the global `$to-spec` and
+`$to-tickets` output formats used for real work.

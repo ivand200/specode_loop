@@ -123,6 +123,7 @@ main() {
   log "Python E2E project: $PROJECT_DIR"
 
   args=("$PROJECT_DIR" --max-iterations 5)
+  args+=(--auth "${SPECODE_LOOP_PYTHON_E2E_AUTH:-${SPECODE_LOOP_E2E_AUTH:-oauth}}")
   if [[ -n "${SPECODE_LOOP_PYTHON_E2E_MODEL:-${SPECODE_LOOP_E2E_MODEL:-}}" ]]; then
     args+=(--model "${SPECODE_LOOP_PYTHON_E2E_MODEL:-${SPECODE_LOOP_E2E_MODEL:-}}")
   fi
@@ -139,22 +140,22 @@ main() {
   assert_file_contains "$PROJECT_DIR/prd.md" "## User Stories"
   assert_file_contains "$PROJECT_DIR/prd.md" "## Implementation Decisions"
   assert_file_contains "$PROJECT_DIR/prd.md" "## Testing Decisions"
-  assert_file_contains "$PROJECT_DIR/plan.md" "# Plan: Specode Loop Request Response Fixture"
+  assert_file_contains "$PROJECT_DIR/plan.md" "# Tickets: Specode Loop Request Response Fixture"
   assert_file_contains "$PROJECT_DIR/plan.md" "> Source PRD: prd.md"
-  assert_file_contains "$PROJECT_DIR/plan.md" "## Architectural decisions"
-  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] Phase 1: Seed Request Artifact"
-  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] Phase 2: Deterministic Response Artifact"
-  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] Phase 3: Reviewable Transcript"
-  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] Phase 4: Executable Integration Check"
-  assert_file_contains "$PROJECT_DIR/plan.md" "### Acceptance criteria"
-  assert_file_contains "$PROJECT_DIR/plan.md" "## Blocked by"
+  assert_file_contains "$PROJECT_DIR/plan.md" "Work the **frontier**"
+  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] 1. Seed Request Artifact"
+  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] 2. Deterministic Response Artifact"
+  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] 3. Reviewable Transcript"
+  assert_file_contains "$PROJECT_DIR/plan.md" "## [x] 4. QA Notes and Executable Integration Check"
+  assert_file_contains "$PROJECT_DIR/plan.md" "**What to build:**"
+  assert_file_contains "$PROJECT_DIR/plan.md" "**Blocked by:**"
   assert_file_exact "$PROJECT_DIR/request.txt" $'REQUEST_ID: specode-basic-001\nUSER_REQUEST: Summarize the Specode Loop demo state.\nEXPECTED_RESPONSE_KIND: deterministic-summary'
   assert_file_exact "$PROJECT_DIR/response.txt" $'RESPONSE_ID: specode-basic-001\nSTATUS: complete\nSUMMARY: Specode Loop can turn one local request into one deterministic response.'
   assert_file_exact "$PROJECT_DIR/transcript.md" $'# Specode Loop Request/Response Transcript\n\n## Request\n\nSummarize the Specode Loop demo state.\n\n## Response\n\nSpecode Loop can turn one local request into one deterministic response.'
   assert_executable "$PROJECT_DIR/verify.sh"
   assert_project_command_exact "Specode Loop request/response example verified." "$PROJECT_DIR" ./verify.sh
-  assert_count "4" "$(count_file_matches '^## \[x\] Phase' "$PROJECT_DIR/plan.md")" "completed phase count"
-  assert_count "0" "$(count_file_matches '^## \[ \] Phase' "$PROJECT_DIR/plan.md")" "remaining unchecked phase count"
+  assert_count "4" "$(count_file_matches '^## \[x\] [0-9]' "$PROJECT_DIR/plan.md")" "completed ticket count"
+  assert_count "0" "$(count_file_matches '^## \[ \] [0-9]' "$PROJECT_DIR/plan.md")" "remaining unchecked ticket count"
   [[ -d "$PROJECT_DIR/.agents/skills/specode-do-work" ]] || fail "project-local specode-do-work skill was not copied"
   assert_file_contains "$PROJECT_DIR/.agents/skills/specode-do-work/SKILL.md" "name: do-work"
   assert_path_missing "$PROJECT_DIR/.codex/skills/do-work"

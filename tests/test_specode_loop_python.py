@@ -9,7 +9,9 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 RUNNER = ROOT_DIR / "scripts" / "specode_loop.py"
+PREFERRED_SKILL = ROOT_DIR / ".agents" / "skills" / "do-work"
 SPECODE_SKILL = ROOT_DIR / ".agents" / "skills" / "specode-do-work"
+AUTH_E2E = ROOT_DIR / "tests" / "specode_loop_auth-e2e.sh"
 
 
 def run_loop(
@@ -85,7 +87,22 @@ def install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
         "set -u\n"
         "cmd=\"${1:-}\"\n"
         "shift || true\n"
+        "if [[ \"${FAKE_SBX_RECORD_AUTH_ENV:-}\" == \"1\" ]]; then\n"
+        "  printf 'auth-env|OPENAI_API_KEY=%s|CODEX_API_KEY=%s\\n' \"${OPENAI_API_KEY:-unset}\" \"${CODEX_API_KEY:-unset}\" >>\"$FAKE_SBX_CALLS\"\n"
+        "fi\n"
         "case \"$cmd\" in\n"
+        "  secret)\n"
+        "    if [[ \"${1:-}\" != \"ls\" ]]; then\n"
+        "      printf 'unexpected fake sbx secret command: %s\\n' \"$*\" >&2\n"
+        "      exit 127\n"
+        "    fi\n"
+        "    if [[ -n \"${FAKE_SBX_DIR:-}\" && -f \"$FAKE_SBX_DIR/secret.status\" ]]; then exit \"$(cat \"$FAKE_SBX_DIR/secret.status\")\"; fi\n"
+        "    printf 'SCOPE      SERVICE   SECRET\\n'\n"
+        "    if [[ \"${FAKE_SBX_OPENAI_SECRET:-oauth}\" != \"missing\" ]]; then\n"
+        "      printf '(global)   openai    %s\\n' \"${FAKE_SBX_OPENAI_SECRET:-oauth}\"\n"
+        "    fi\n"
+        "    exit 0\n"
+        "    ;;\n"
         "  create)\n"
         "    name=\"\"\n"
         "    if [[ \"${1:-}\" == \"--name\" ]]; then\n"
@@ -214,6 +231,8 @@ def test_help_describes_python_command_contract() -> None:
     assert "--prd PATH" in result.stdout
     assert "--plan PATH" in result.stdout
     assert "--max-iterations N" in result.stdout
+    assert "--auth MODE" in result.stdout
+    assert "oauth, api-key (default: oauth)" in result.stdout
     assert "--reasoning-effort EFFORT" in result.stdout
     assert result.stderr == ""
 
@@ -230,6 +249,15 @@ def test_blessed_uv_run_python_invocation_shows_help() -> None:
 
     assert result.returncode == 0
     assert "Usage: scripts/specode_loop.py PROJECT_DIR [options]" in result.stdout
+
+
+def test_real_auth_e2e_is_mode_selectable_and_runs_one_codex_request() -> None:
+    source = AUTH_E2E.read_text(encoding="utf-8")
+
+    assert 'AUTH_MODE="${SPECODE_LOOP_AUTH_E2E_MODE:-oauth}"' in source
+    assert '--max-iterations 1 --auth "$AUTH_MODE"' in source
+    assert "## [x] Phase 1: Authentication request fixture" in source
+    assert "ALL TASKS DONE sentinel detected" in source
 
 
 def test_missing_target_project_argument_prints_usage() -> None:
@@ -262,6 +290,7 @@ def test_option_parsing_and_valid_run_execute_sandbox(tmp_path: Path, monkeypatc
     assert f"PRD document: {project / 'prd.md'}" in result.stdout
     assert f"Plan document: {project / 'plan.md'}" in result.stdout
     assert "Max iterations: 7" in result.stdout
+    assert "Authentication: OAuth" in result.stdout
     assert "Model: test-model" in result.stdout
     assert "Reasoning effort: medium" in result.stdout
     calls = assert_sandbox_called(calls_log)
@@ -277,6 +306,72 @@ def test_option_parsing_and_valid_run_execute_sandbox(tmp_path: Path, monkeypatc
     assert_no_temp_artifacts(tmp_path, project)
 
 
+def test_oauth_is_default_and_rejects_stored_api_key_before_sandbox_execution(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_SBX_OPENAI_SECRET", "sk-pro******...******test")
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 1
+    assert "Error: OAuth authentication is required by default" in result.stderr
+    assert "sbx secret set -g openai --oauth" in result.stderr
+    assert "--auth api-key" in result.stderr
+    assert_bundled_skill_not_synced(project)
+    assert_sandbox_not_called(calls_log)
+
+
+def test_api_key_auth_requires_explicit_opt_in(tmp_path: Path, monkeypatch) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_SBX_OPENAI_SECRET", "sk-pro******...******test")
+    write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
+
+    result = run_loop(project, "--auth", "api-key", path=path)
+
+    assert result.returncode == 0
+    assert "Authentication: API key (explicit opt-in)" in result.stdout
+    assert "create|" in assert_sandbox_called(calls_log)
+
+
+def test_selected_auth_mode_must_match_stored_openai_credential(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+
+    api_key_result = run_loop(project, "--auth", "api-key", path=path)
+    assert api_key_result.returncode == 1
+    assert "Error: API-key authentication was requested" in api_key_result.stderr
+    assert "sbx secret set -g openai" in api_key_result.stderr
+
+    monkeypatch.setenv("FAKE_SBX_OPENAI_SECRET", "missing")
+    oauth_result = run_loop(project, path=path)
+    assert oauth_result.returncode == 1
+    assert "Error: no global OpenAI credential is configured" in oauth_result.stderr
+    assert "sbx secret set -g openai --oauth" in oauth_result.stderr
+    assert_sandbox_not_called(calls_log)
+
+
+def test_oauth_mode_does_not_pass_api_key_environment_to_sbx(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "host-openai-key")
+    monkeypatch.setenv("CODEX_API_KEY", "host-codex-key")
+    monkeypatch.setenv("FAKE_SBX_RECORD_AUTH_ENV", "1")
+    write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 0
+    calls = assert_sandbox_called(calls_log)
+    assert "auth-env|OPENAI_API_KEY=unset|CODEX_API_KEY=unset" in calls
+
+
 def test_default_model_and_reasoning_effort_are_passed_to_codex(tmp_path: Path, monkeypatch) -> None:
     project = make_project(tmp_path, "defaults")
     path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
@@ -286,12 +381,12 @@ def test_default_model_and_reasoning_effort_are_passed_to_codex(tmp_path: Path, 
 
     calls = assert_sandbox_called(calls_log)
     assert result.returncode == 0
-    assert "Model: gpt-5.5" in result.stdout
-    assert "Reasoning effort: high" in result.stdout
+    assert "Model: gpt-5.6-sol" in result.stdout
+    assert "Reasoning effort: medium" in result.stdout
     assert (
         f"codex exec --dangerously-bypass-approvals-and-sandbox "
-        f"--skip-git-repo-check -C {project} -m gpt-5.5 -c "
-        f"model_reasoning_effort=\"high\" -o {project}/.specode_loop-last-message."
+        f"--skip-git-repo-check -C {project} -m gpt-5.6-sol -c "
+        f"model_reasoning_effort=\"medium\" -o {project}/.specode_loop-last-message."
     ) in calls
 
 
@@ -590,12 +685,15 @@ def test_prompt_and_codex_argument_order_match_python_command_contract(tmp_path:
         f"--skip-git-repo-check -C {project} -m test-model -c "
         f"model_reasoning_effort=\"high\" -o {project}/.specode_loop-last-message."
     ) in calls
-    assert "Use the do-work skill if it is available in this sandbox." in calls
-    assert "If do-work is unavailable, use the project-local specode-do-work skill." in calls
+    assert "Invoke the $do-work skill if it is available in this sandbox." in calls
+    assert "If the preferred copy is unavailable, invoke $do-work from the project-local .agents/skills/specode-do-work directory." in calls
+    assert "The PRD document corresponds to output from the global $to-spec skill." in calls
+    assert "The plan document corresponds to output from the global $to-tickets skill." in calls
+    assert "For $do-work, treat each unchecked numbered ticket in a $to-tickets plan as a Phase." in calls
     assert "PRD document: prd.md" in calls
     assert "Plan document: plan.md" in calls
     assert "Read the PRD document and plan document before choosing work." in calls
-    assert "Work on AFK Phases only. Do not work on HITL Phases." in calls
+    assert "Work on AFK Plan Tasks only. Do not work on HITL Plan Tasks." in calls
     assert "Select exactly one undone AFK Phase in the plan document for this run." not in calls
     assert "Complete only the selected AFK Phase" not in calls
     assert "Do not modify runner-managed copied workflow skill files" not in calls
@@ -603,8 +701,8 @@ def test_prompt_and_codex_argument_order_match_python_command_contract(tmp_path:
     assert "Do not make a git commit unless the PRD document or plan document explicitly requires it." not in calls
     assert "Mark only the completed AFK Phase done" not in calls
     assert "After validation and the plan checkbox update" not in calls
-    assert "If no undone AFK Phases remain, output exactly:" in calls
-    assert "When the selected AFK Phase is complete and the plan document has been updated, output exactly:" in calls
+    assert "If no undone AFK Plan Tasks remain, output exactly:" in calls
+    assert "When the selected AFK Plan Task is complete and the plan document has been updated, output exactly:" in calls
 
 
 def test_sandbox_exec_does_not_inherit_runner_stdin(tmp_path: Path, monkeypatch) -> None:
@@ -668,6 +766,26 @@ def test_bundled_skill_is_copied_and_owned_target_is_overwritten(tmp_path: Path,
     assert unrelated_skill.read_text(encoding="utf-8") == "project-owned skill\n"
     assert unrelated_agent_config.read_text(encoding="utf-8") == "project-owned agent config\n"
     assert f"skill-before-exec|{copied_skill}|present" in assert_sandbox_called(calls_log)
+
+
+def test_runner_owned_do_work_copies_match_the_preferred_source() -> None:
+    preferred_files = {
+        path.relative_to(PREFERRED_SKILL): path.read_bytes()
+        for path in PREFERRED_SKILL.rglob("*")
+        if path.is_file()
+    }
+    fallback_files = {
+        path.relative_to(SPECODE_SKILL): path.read_bytes()
+        for path in SPECODE_SKILL.rglob("*")
+        if path.is_file()
+    }
+
+    assert preferred_files
+    assert fallback_files == preferred_files
+    assert Path("agents/openai.yaml") in preferred_files
+    assert b"allow_implicit_invocation: false" in preferred_files[
+        Path("agents/openai.yaml")
+    ]
 
 
 def test_global_do_work_skill_is_copied_into_target_when_available(tmp_path: Path, monkeypatch) -> None:
@@ -762,6 +880,8 @@ def test_invalid_options_fail_before_sandbox_execution(tmp_path: Path, monkeypat
         (("--reasoning-effort", "enormous"), "--effort must be one of: minimal, low, medium, high, xhigh"),
         (("--max-iterations",), "--max-iterations requires a value"),
         (("--model",), "--model requires a value"),
+        (("--auth",), "--auth requires a value"),
+        (("--auth", "automatic"), "--auth must be one of: oauth, api-key"),
         (("--effort",), "--effort requires a value"),
         (("--reasoning-effort",), "--reasoning-effort requires a value"),
         (("--prd",), "--prd requires a value"),
