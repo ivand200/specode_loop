@@ -833,6 +833,30 @@ def test_attempt_artifacts_are_absent_before_forced_sandbox_removal(
     }
 
 
+def test_artifact_preparation_failure_cleans_up_before_propagating(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    final_message = request.target_project / (
+        f".specode_loop-last-message.{request.iteration}.{os.getpid()}"
+    )
+    final_message.mkdir()
+
+    with pytest.raises(OSError) as raised:
+        run_sandbox_iteration(request)
+
+    calls = [
+        json.loads(line)
+        for line in Path(os.environ["FAKE_SBX_CALLS"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert raised.value.filename == str(final_message)
+    assert [call[0] for call in calls] == ["rm"]
+    assert not list(tmp_path.glob("specode_loop.*"))
+
+
 def test_process_start_failure_releases_artifacts_and_preserves_the_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

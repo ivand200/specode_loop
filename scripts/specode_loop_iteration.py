@@ -237,13 +237,14 @@ def _remove_artifact(path: _Path) -> None:
 def _cleanup_iteration(
     request: SandboxIterationRequest,
     outcome: SandboxIterationOutcome,
-    transcript: _Path,
+    transcript: _Path | None,
     final_message: _Path,
     sandbox_name: str,
 ) -> BaseException | None:
     cleanup_control_flow: BaseException | None = None
+    artifacts = (final_message,) if transcript is None else (transcript, final_message)
 
-    for artifact in (transcript, final_message):
+    for artifact in artifacts:
         try:
             _remove_artifact(artifact)
         except BaseException as error:
@@ -367,15 +368,15 @@ def run_sandbox_iteration(
 ) -> SandboxIterationOutcome:
     _validate_request(request)
     sandbox_name = _new_sandbox_name(request.target_project, request.iteration)
-    transcript = _make_temp_output(request.iteration)
+    transcript: _Path | None = None
     final_message = request.target_project / (
         f".specode_loop-last-message.{request.iteration}.{_os.getpid()}"
     )
-    _remove_artifact(final_message)
 
     command_status = 0
     outcome = SandboxIterationOutcome.FAILED
     try:
+        transcript = _make_temp_output(request.iteration)
         _remove_artifact(final_message)
         _log_line(request)
         _log_line(
