@@ -21,6 +21,7 @@ _PREFERRED_WORKFLOW_SKILL = "do-work"
 _FALLBACK_WORKFLOW_SKILL = "specode-do-work"
 _TASK_DONE_SENTINEL = "TASK DONE"
 _ALL_TASKS_DONE_SENTINEL = "ALL TASKS DONE"
+_FAILURE_EXCERPT_LINES = 30
 
 
 @_dataclass(frozen=True)
@@ -150,6 +151,64 @@ def _remove_artifact(path: _Path) -> None:
         path.unlink()
 
 
+def _report_final_message(
+    request: SandboxIterationRequest, final_message: _Path, transcript: _Path
+) -> None:
+    if not final_message.exists() or final_message.stat().st_size == 0:
+        return
+
+    content = final_message.read_text(encoding="utf-8")
+    if request.verbose_transcript:
+        _log_line(
+            request,
+            "===== Codex final message captured from --output-last-message =====",
+        )
+        print(content, end="")
+        if not content.endswith("\n"):
+            print()
+        with request.project_log.open("a", encoding="utf-8") as log:
+            log.write(content)
+            if not content.endswith("\n"):
+                log.write("\n")
+    else:
+        _log_line(request, "Captured Codex final message from --output-last-message.")
+
+    with transcript.open("a", encoding="utf-8") as output:
+        output.write(content)
+        output.write("\n")
+
+
+def _report_no_sentinel_failure(
+    request: SandboxIterationRequest,
+    transcript: _Path,
+    command_status: int,
+    sandbox_name: str,
+) -> None:
+    captured_lines = transcript.read_text(encoding="utf-8").splitlines()
+    lines = [
+        "",
+        "Sandbox iteration failed without a success sentinel.",
+        f"Iteration: {request.iteration}/{request.maximum_iterations}",
+        f"Sandbox: {sandbox_name}",
+        f"Sandbox command exit code: {command_status}",
+        "Expected success sentinels:",
+        f"- {_TASK_DONE_SENTINEL}",
+        f"- {_ALL_TASKS_DONE_SENTINEL}",
+        f"Project log: {request.project_log}",
+        f"Last {_FAILURE_EXCERPT_LINES} captured output lines:",
+    ]
+    lines.extend(
+        captured_lines[-_FAILURE_EXCERPT_LINES:]
+        if captured_lines
+        else ["(no output captured)"]
+    )
+    lines.append(
+        "For the full raw transcript, rerun with SPECODE_LOOP_VERBOSE=1."
+    )
+    for line in lines:
+        _log_line(request, line)
+
+
 def run_sandbox_iteration(
     request: SandboxIterationRequest,
 ) -> SandboxIterationOutcome:
@@ -203,6 +262,8 @@ def run_sandbox_iteration(
                 transcript,
             )
 
+        _report_final_message(request, final_message, transcript)
+
         authoritative_output = transcript
         if final_message.exists() and final_message.stat().st_size > 0:
             authoritative_output = final_message
@@ -219,6 +280,14 @@ def run_sandbox_iteration(
                 f"===== iteration {request.iteration} status: TASK DONE sentinel detected; iteration successful (command exit code: {command_status}) =====",
             )
             outcome = SandboxIterationOutcome.PLAN_TASK_COMPLETED
+        else:
+            _log_line(
+                request,
+                f"===== iteration {request.iteration} status: FAILED, no exact success sentinel detected (command exit code: {command_status}) =====",
+            )
+            _report_no_sentinel_failure(
+                request, transcript, command_status, sandbox_name
+            )
         return outcome
     finally:
         _remove_artifact(transcript)
@@ -239,5 +308,11 @@ def run_sandbox_iteration(
                 f"Sandbox cleanup: failed to remove sandbox {sandbox_name} "
                 f"(exit code: {cleanup.returncode})."
             )
-        with request.project_log.open("a", encoding="utf-8") as log:
-            log.write(f"{message}\n")
+        if (
+            outcome is SandboxIterationOutcome.FAILED
+            or cleanup.returncode != 0
+        ):
+            _log_line(request, message)
+        else:
+            with request.project_log.open("a", encoding="utf-8") as log:
+                log.write(f"{message}\n")

@@ -62,6 +62,7 @@ def _install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
         "    resource = os.environ.get('FAKE_SBX_RESOURCE')\n"
         "    if resource:\n"
         "        Path(resource).unlink(missing_ok=True)\n"
+        "    raise SystemExit(int(os.environ.get('FAKE_SBX_RM_STATUS', '0')))\n"
         "else:\n"
         "    raise SystemExit(127)\n",
         encoding="utf-8",
@@ -449,3 +450,125 @@ def test_failed_creation_skips_codex_and_removes_the_assigned_sandbox_once(
     assert [call[0] for call in calls] == ["create", "rm"]
     assert calls[1] == ["rm", "--force", calls[0][2]]
     assert not resource.exists()
+
+
+def test_concise_reporting_captures_final_message_without_raw_output_in_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    monkeypatch.setenv(
+        "FAKE_SBX_EXEC_OUTPUT", "RAW TRANSCRIPT: internal work details"
+    )
+    monkeypatch.setenv(
+        "FAKE_SBX_FINAL_MESSAGE", "RAW FINAL MESSAGE: plan summary\nALL TASKS DONE\n"
+    )
+
+    outcome = run_sandbox_iteration(request)
+
+    terminal = capsys.readouterr().out
+    log = request.project_log.read_text(encoding="utf-8")
+    assert outcome is SandboxIterationOutcome.ALL_PLAN_TASKS_COMPLETED
+    assert "RAW TRANSCRIPT: internal work details" in terminal
+    assert "Captured Codex final message from --output-last-message." in terminal
+    assert "RAW TRANSCRIPT:" not in log
+    assert "RAW FINAL MESSAGE:" not in log
+    assert "Captured Codex final message from --output-last-message." in log
+    assert "ALL TASKS DONE sentinel detected" in log
+    assert "Sandbox cleanup: removed sandbox " not in terminal
+    assert "Sandbox cleanup: removed sandbox " in log
+
+
+def test_verbose_reporting_includes_raw_transcript_and_final_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    request = SandboxIterationRequest(
+        target_project=request.target_project,
+        prd_role_path=request.prd_role_path,
+        plan_role_path=request.plan_role_path,
+        iteration=request.iteration,
+        maximum_iterations=request.maximum_iterations,
+        model=request.model,
+        reasoning_effort=request.reasoning_effort,
+        project_log=request.project_log,
+        verbose_transcript=True,
+    )
+    monkeypatch.setenv(
+        "FAKE_SBX_EXEC_OUTPUT", "RAW TRANSCRIPT: detailed sandbox output"
+    )
+    monkeypatch.setenv(
+        "FAKE_SBX_FINAL_MESSAGE",
+        "RAW FINAL MESSAGE: detailed final note\nALL TASKS DONE\n",
+    )
+
+    outcome = run_sandbox_iteration(request)
+
+    terminal = capsys.readouterr().out
+    log = request.project_log.read_text(encoding="utf-8")
+    assert outcome is SandboxIterationOutcome.ALL_PLAN_TASKS_COMPLETED
+    heading = "===== Codex final message captured from --output-last-message ====="
+    assert heading in terminal
+    assert "RAW FINAL MESSAGE: detailed final note" in terminal
+    assert "RAW TRANSCRIPT: detailed sandbox output" in log
+    assert heading in log
+    assert "RAW FINAL MESSAGE: detailed final note" in log
+
+
+def test_failure_reporting_includes_bounded_evidence_before_visible_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    output = "\n".join(f"agent output line {line:02d}" for line in range(1, 36))
+    monkeypatch.setenv("FAKE_SBX_EXEC_OUTPUT", output)
+    monkeypatch.setenv("FAKE_SBX_FINAL_MESSAGE", "")
+    monkeypatch.setenv("FAKE_SBX_EXEC_STATUS", "7")
+
+    outcome = run_sandbox_iteration(request)
+
+    terminal = capsys.readouterr().out
+    log = request.project_log.read_text(encoding="utf-8")
+    assert outcome is SandboxIterationOutcome.FAILED
+    assert "FAILED, no exact success sentinel detected" in terminal
+    assert "Sandbox iteration failed without a success sentinel." in terminal
+    assert "Iteration: 1/3" in terminal
+    assert "Sandbox command exit code: 7" in terminal
+    assert "Expected success sentinels:\n- TASK DONE\n- ALL TASKS DONE" in terminal
+    assert f"Project log: {request.project_log}" in terminal
+    assert "Last 30 captured output lines:" in terminal
+    assert "agent output line 06" in terminal
+    assert "agent output line 35" in terminal
+    assert "agent output line 05" not in log
+    assert "For the full raw transcript, rerun with SPECODE_LOOP_VERBOSE=1." in terminal
+    cleanup = "Sandbox cleanup: removed sandbox "
+    assert cleanup in terminal
+    assert terminal.index("FAILED, no exact success sentinel detected") < terminal.index(
+        "Sandbox iteration failed without a success sentinel."
+    ) < terminal.index(cleanup)
+    assert "Sandbox iteration failed without a success sentinel." in log
+    assert cleanup in log
+
+
+def test_failed_cleanup_is_visible_without_replacing_successful_classification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_SBX_RM_STATUS", "23")
+
+    outcome = run_sandbox_iteration(request)
+
+    terminal = capsys.readouterr().out
+    log = request.project_log.read_text(encoding="utf-8")
+    failure = "Sandbox cleanup: failed to remove sandbox "
+    assert outcome is SandboxIterationOutcome.ALL_PLAN_TASKS_COMPLETED
+    assert failure in terminal
+    assert "(exit code: 23)." in terminal
+    assert failure in log
+    assert "(exit code: 23)." in log
