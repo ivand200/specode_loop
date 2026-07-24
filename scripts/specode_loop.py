@@ -11,6 +11,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from specode_loop_iteration import (
+    SandboxIterationOutcome,
+    SandboxIterationRequest,
+    run_sandbox_iteration,
+)
+
 MAX_ITERATIONS_DEFAULT = "10"
 DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_REASONING_EFFORT = "medium"
@@ -774,17 +780,29 @@ def run_loop(
     options: Options,
     state: LoopState,
 ) -> int:
+    assert state.log_file is not None
+    maximum_iterations = int(options.max_iterations)
     for iteration in range(1, int(options.max_iterations) + 1):
-        if run_single_task_iteration(
-            project_abs, planning_documents, options, state, iteration
-        ):
-            cleanup_active_sandbox(state)
-            if state.last_sentinel == "all":
-                return 0
+        outcome = run_sandbox_iteration(
+            SandboxIterationRequest(
+                target_project=project_abs,
+                prd_role_path=planning_documents.prd_role_path,
+                plan_role_path=planning_documents.plan_role_path,
+                iteration=iteration,
+                maximum_iterations=maximum_iterations,
+                model=options.model,
+                reasoning_effort=options.reasoning_effort,
+                project_log=state.log_file,
+                verbose_transcript=os.environ.get("SPECODE_LOOP_VERBOSE", "0") == "1",
+            )
+        )
+        if outcome is SandboxIterationOutcome.PLAN_TASK_COMPLETED:
             continue
-
-        cleanup_active_sandbox(state, terminal=True)
-        return 1
+        if outcome is SandboxIterationOutcome.ALL_PLAN_TASKS_COMPLETED:
+            return 0
+        if outcome is SandboxIterationOutcome.FAILED:
+            return 1
+        raise AssertionError(f"unsupported Sandbox Iteration outcome: {outcome!r}")
 
     log_line(state)
     log_line(state, "Specode Loop stopped at the maximum iteration cap.")

@@ -1,4 +1,5 @@
 import ast
+import json
 import os
 import re
 import shutil
@@ -9,6 +10,7 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 RUNNER = ROOT_DIR / "scripts" / "specode_loop.py"
+ITERATION_MODULE = ROOT_DIR / "scripts" / "specode_loop_iteration.py"
 PREFERRED_SKILL = ROOT_DIR / ".agents" / "skills" / "do-work"
 SPECODE_SKILL = ROOT_DIR / ".agents" / "skills" / "specode-do-work"
 AUTH_E2E = ROOT_DIR / "tests" / "specode_loop_auth-e2e.sh"
@@ -235,6 +237,104 @@ def test_help_describes_python_command_contract() -> None:
     assert "oauth, api-key (default: oauth)" in result.stdout
     assert "--reasoning-effort EFFORT" in result.stdout
     assert result.stderr == ""
+
+
+def test_runner_maps_preflight_values_to_one_deep_iteration_call_per_position(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path, "deep-cutover")
+    path, calls_log = install_fake_sbx(tmp_path)
+    monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
+    monkeypatch.setenv("FAKE_SBX_DIR", str(tmp_path))
+    monkeypatch.setenv("SPECODE_LOOP_VERBOSE", "1")
+    request_log = tmp_path / "iteration-requests.jsonl"
+    monkeypatch.setenv("ITERATION_REQUEST_LOG", str(request_log))
+
+    isolated_root = tmp_path / "isolated-runner"
+    isolated_scripts = isolated_root / "scripts"
+    isolated_scripts.mkdir(parents=True)
+    isolated_runner = isolated_scripts / "specode_loop.py"
+    shutil.copyfile(RUNNER, isolated_runner)
+    shutil.copytree(
+        SPECODE_SKILL,
+        isolated_root / ".agents" / "skills" / "specode-do-work",
+    )
+    (isolated_scripts / "specode_loop_iteration.py").write_text(
+        "from dataclasses import asdict, dataclass\n"
+        "from enum import Enum, auto\n"
+        "import json\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SandboxIterationRequest:\n"
+        "    target_project: Path\n"
+        "    prd_role_path: Path\n"
+        "    plan_role_path: Path\n"
+        "    iteration: int\n"
+        "    maximum_iterations: int\n"
+        "    model: str\n"
+        "    reasoning_effort: str\n"
+        "    project_log: Path\n"
+        "    verbose_transcript: bool\n"
+        "\n"
+        "class SandboxIterationOutcome(Enum):\n"
+        "    PLAN_TASK_COMPLETED = auto()\n"
+        "    ALL_PLAN_TASKS_COMPLETED = auto()\n"
+        "    FAILED = auto()\n"
+        "\n"
+        "def run_sandbox_iteration(request):\n"
+        "    values = asdict(request)\n"
+        "    values = {key: str(value) if isinstance(value, Path) else value for key, value in values.items()}\n"
+        "    with open(os.environ['ITERATION_REQUEST_LOG'], 'a', encoding='utf-8') as log:\n"
+        "        log.write(json.dumps(values) + '\\n')\n"
+        "    if request.iteration == 1:\n"
+        "        return SandboxIterationOutcome.PLAN_TASK_COMPLETED\n"
+        "    return SandboxIterationOutcome.ALL_PLAN_TASKS_COMPLETED\n",
+        encoding="utf-8",
+    )
+
+    result = run_loop(
+        project,
+        "--max-iterations",
+        "3",
+        "--model",
+        "test-model",
+        "--effort",
+        "high",
+        path=path,
+        runner=isolated_runner,
+    )
+
+    requests = [json.loads(line) for line in request_log.read_text().splitlines()]
+    assert result.returncode == 0
+    assert requests == [
+        {
+            "target_project": str(project.resolve()),
+            "prd_role_path": "prd.md",
+            "plan_role_path": "plan.md",
+            "iteration": 1,
+            "maximum_iterations": 3,
+            "model": "test-model",
+            "reasoning_effort": "high",
+            "project_log": str(project / "specode_loop.log"),
+            "verbose_transcript": True,
+        },
+        {
+            "target_project": str(project.resolve()),
+            "prd_role_path": "prd.md",
+            "plan_role_path": "plan.md",
+            "iteration": 2,
+            "maximum_iterations": 3,
+            "model": "test-model",
+            "reasoning_effort": "high",
+            "project_log": str(project / "specode_loop.log"),
+            "verbose_transcript": True,
+        },
+    ]
+    calls = calls_log.read_text(encoding="utf-8") if calls_log.exists() else ""
+    assert "create|" not in calls
+    assert "exec|" not in calls
 
 
 def test_blessed_uv_run_python_invocation_shows_help() -> None:
@@ -818,6 +918,9 @@ def test_missing_bundled_skill_source_fails_before_sandbox_execution(tmp_path: P
     isolated_runner = tmp_path / "isolated-runner" / "scripts" / "specode_loop.py"
     isolated_runner.parent.mkdir(parents=True)
     shutil.copyfile(RUNNER, isolated_runner)
+    shutil.copyfile(
+        ITERATION_MODULE, isolated_runner.with_name("specode_loop_iteration.py")
+    )
 
     result = run_loop(project, path=path, runner=isolated_runner)
 
@@ -1039,4 +1142,6 @@ def test_runtime_code_uses_only_standard_library_imports() -> None:
 
     assert "typer" not in runtime_imports
     assert "rich" not in runtime_imports
-    assert runtime_imports <= set(sys.stdlib_module_names)
+    assert runtime_imports <= set(sys.stdlib_module_names) | {
+        "specode_loop_iteration"
+    }
