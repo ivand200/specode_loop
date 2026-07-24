@@ -213,6 +213,12 @@ def run_sandbox_iteration(
                 f"===== iteration {request.iteration} status: ALL TASKS DONE sentinel detected; overall run complete (command exit code: {command_status}) =====",
             )
             outcome = SandboxIterationOutcome.ALL_PLAN_TASKS_COMPLETED
+        elif _contains_exact_line(authoritative_output, _TASK_DONE_SENTINEL):
+            _log_line(
+                request,
+                f"===== iteration {request.iteration} status: TASK DONE sentinel detected; iteration successful (command exit code: {command_status}) =====",
+            )
+            outcome = SandboxIterationOutcome.PLAN_TASK_COMPLETED
         return outcome
     finally:
         _remove_artifact(transcript)
