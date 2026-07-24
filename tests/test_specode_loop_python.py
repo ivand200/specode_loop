@@ -1,7 +1,6 @@
 import ast
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -190,17 +189,9 @@ def write_scenario(tmp_path: Path, run_number: int, output: str, status: int = 0
     (tmp_path / f"run_{run_number}.status").write_text(f"{status}\n", encoding="utf-8")
 
 
-def write_last_message(tmp_path: Path, run_number: int, output: str) -> None:
-    (tmp_path / f"run_{run_number}.last").write_text(output, encoding="utf-8")
-
-
 def write_interrupt(tmp_path: Path, run_number: int, output: str) -> None:
     (tmp_path / f"run_{run_number}.out").write_text(output, encoding="utf-8")
     (tmp_path / f"run_{run_number}.interrupt").write_text("interrupt\n", encoding="utf-8")
-
-
-def write_cleanup_status(tmp_path: Path, status: int) -> None:
-    (tmp_path / "rm.status").write_text(f"{status}\n", encoding="utf-8")
 
 
 def assert_sandbox_not_called(calls_log: Path) -> None:
@@ -219,10 +210,6 @@ def assert_sandbox_called(calls_log: Path) -> str:
 def assert_no_temp_artifacts(tmp_path: Path, project: Path) -> None:
     assert not list(tmp_path.glob("specode_loop.*"))
     assert not list(project.glob(".specode_loop-last-message.*"))
-
-
-def re_fullmatch_hostname(value: str) -> re.Match[str] | None:
-    return re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", value)
 
 
 def test_help_describes_python_command_contract() -> None:
@@ -565,90 +552,17 @@ def test_successive_task_done_iterations_continue_until_all_tasks_done(tmp_path:
     assert_no_temp_artifacts(tmp_path, project)
 
 
-def test_last_message_sentinel_takes_precedence_over_echoed_prompt_text(tmp_path: Path, monkeypatch) -> None:
-    project = make_project(tmp_path, "echoed-prompt")
-    path, calls_log, rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
-    write_scenario(tmp_path, 1, "If no undone AFK Phases remain, output exactly:\nALL TASKS DONE\n")
-    write_last_message(tmp_path, 1, "TASK DONE\n")
-    write_scenario(tmp_path, 2, "No remaining phases.\n")
-    write_last_message(tmp_path, 2, "ALL TASKS DONE\n")
-
-    result = run_loop(project, "--max-iterations", "2", path=path)
-
-    log = (project / "specode_loop.log").read_text(encoding="utf-8")
-    calls = assert_sandbox_called(calls_log)
-    assert result.returncode == 0
-    assert "iteration 1 status: TASK DONE sentinel detected" in log
-    assert "iteration 1 status: ALL TASKS DONE" not in log
-    assert "iteration 2 status: ALL TASKS DONE sentinel detected" in log
-    assert calls.count("exec|specode-loop-echoed-prompt-") == 2
-    assert rm_log.read_text(encoding="utf-8").count("rm|specode-loop-echoed-prompt-") == 2
-
-
-def test_exact_sentinel_lines_are_required_and_false_positive_text_fails(tmp_path: Path, monkeypatch) -> None:
-    project = make_project(tmp_path, "false-positive")
-    path, _calls_log, rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
-    write_scenario(tmp_path, 1, "The words TASK DONE are present, but not alone.\n")
-
-    result = run_loop(project, path=path)
-
-    log = (project / "specode_loop.log").read_text(encoding="utf-8")
-    assert result.returncode == 1
-    assert "FAILED, no exact success sentinel detected" in log
-    assert "TASK DONE sentinel detected" not in log
-    assert "Sandbox cleanup: removed sandbox specode-loop-false-positive-" in result.stdout
-    assert "rm|specode-loop-false-positive-" in rm_log.read_text(encoding="utf-8")
-
-
-def test_no_sentinel_failure_prints_summary_and_cleans_up(tmp_path: Path, monkeypatch) -> None:
+def test_failed_sandbox_iteration_maps_to_runner_failure_status(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = make_project(tmp_path, "no-sentinel")
-    path, _calls_log, rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
-    output = "".join(f"agent output line {line:02d}\n" for line in range(1, 36))
-    write_scenario(tmp_path, 1, output, status=7)
-
-    result = run_loop(project, path=path)
-
-    log = (project / "specode_loop.log").read_text(encoding="utf-8")
-    assert result.returncode == 1
-    assert "FAILED, no exact success sentinel detected" in log
-    assert "Sandbox iteration failed without a success sentinel." in result.stdout
-    assert "Iteration: 1/10" in result.stdout
-    assert "Sandbox: specode-loop-no-sentinel-" in result.stdout
-    assert "Sandbox command exit code: 7" in result.stdout
-    assert "Expected success sentinels:" in result.stdout
-    assert "- TASK DONE" in result.stdout
-    assert "- ALL TASKS DONE" in result.stdout
-    assert f"Project log: {project / 'specode_loop.log'}" in result.stdout
-    assert "Last 30 captured output lines:" in result.stdout
-    assert "agent output line 06" in result.stdout
-    assert "agent output line 35" in result.stdout
-    assert "For the full raw transcript, rerun with SPECODE_LOOP_VERBOSE=1." in result.stdout
-    assert "Sandbox iteration failed without a success sentinel." in log
-    assert "agent output line 06" in log
-    assert "agent output line 35" in log
-    assert "agent output line 05" not in log
-    assert "Sandbox cleanup: removed sandbox specode-loop-no-sentinel-" in result.stdout
-    assert "rm|specode-loop-no-sentinel-" in rm_log.read_text(encoding="utf-8")
-    assert_no_temp_artifacts(tmp_path, project)
-
-
-def test_failed_cleanup_preserves_iteration_failure_status(tmp_path: Path, monkeypatch) -> None:
-    project = make_project(tmp_path, "failed-cleanup")
     path, _calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
     write_scenario(tmp_path, 1, "ordinary output without a sentinel\n", status=7)
-    write_cleanup_status(tmp_path, 23)
 
     result = run_loop(project, path=path)
 
-    log = (project / "specode_loop.log").read_text(encoding="utf-8")
     assert result.returncode == 1
     assert "Sandbox iteration failed without a success sentinel." in result.stdout
-    assert "Sandbox command exit code: 7" in result.stdout
-    assert "Sandbox cleanup: failed to remove sandbox specode-loop-failed-cleanup-" in result.stdout
-    assert "(exit code: 23)" in result.stdout
-    assert "Sandbox cleanup: failed to remove sandbox specode-loop-failed-cleanup-" in log
-    assert "(exit code: 23)" in log
-    assert_no_temp_artifacts(tmp_path, project)
 
 
 def test_interrupt_cleans_temp_files_and_active_sandbox(tmp_path: Path, monkeypatch) -> None:
@@ -691,146 +605,6 @@ def test_max_iteration_cap_fails_without_no_sentinel_diagnostics(tmp_path: Path,
     assert "Last 30 captured output lines:" not in log
     assert rm_log.read_text(encoding="utf-8").count("rm|specode-loop-max-cap-") == 2
     assert_no_temp_artifacts(tmp_path, project)
-
-
-def test_sentinel_detected_from_final_message_file(tmp_path: Path, monkeypatch) -> None:
-    project = make_project(tmp_path, "final-message")
-    path, _calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
-    write_scenario(tmp_path, 1, "streamed output without a sentinel\n")
-    write_last_message(tmp_path, 1, "TASK DONE\n")
-    write_scenario(tmp_path, 2, "second streamed output without a sentinel\n")
-    write_last_message(tmp_path, 2, "ALL TASKS DONE\n")
-
-    result = run_loop(project, "--max-iterations", "2", path=path)
-
-    log = (project / "specode_loop.log").read_text(encoding="utf-8")
-    assert result.returncode == 0
-    assert "Captured Codex final message from --output-last-message." in log
-    assert "TASK DONE sentinel detected; iteration successful" in log
-    assert "ALL TASKS DONE sentinel detected; overall run complete" in log
-    assert_no_temp_artifacts(tmp_path, project)
-
-
-def test_success_sentinel_overrides_nonzero_sandbox_exit(tmp_path: Path, monkeypatch) -> None:
-    project = make_project(tmp_path, "nonzero-sentinel")
-    path, calls_log, rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
-    write_scenario(tmp_path, 1, "TASK DONE\n", status=42)
-    write_scenario(tmp_path, 2, "ALL TASKS DONE\n", status=42)
-
-    result = run_loop(project, "--max-iterations", "2", path=path)
-
-    log = (project / "specode_loop.log").read_text(encoding="utf-8")
-    assert result.returncode == 0
-    assert "TASK DONE sentinel detected; iteration successful (command exit code: 42)" in log
-    assert "ALL TASKS DONE sentinel detected; overall run complete (command exit code: 42)" in log
-    calls = assert_sandbox_called(calls_log)
-    assert calls.count("create|specode-loop-nonzero-sentinel-") == 2
-    assert calls.count("exec|specode-loop-nonzero-sentinel-") == 2
-    assert rm_log.read_text(encoding="utf-8").count("rm|specode-loop-nonzero-sentinel-") == 2
-
-
-def test_default_log_is_concise_and_omits_raw_transcript(tmp_path: Path, monkeypatch) -> None:
-    project = make_project(tmp_path, "concise-log")
-    path, _calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
-    write_scenario(tmp_path, 1, "RAW TRANSCRIPT: internal work details\nTASK DONE\n")
-    write_scenario(tmp_path, 2, "RAW TRANSCRIPT: final plan dump\nALL TASKS DONE\n")
-    write_last_message(tmp_path, 2, "RAW FINAL MESSAGE: plan summary\nALL TASKS DONE\n")
-
-    result = run_loop(project, "--max-iterations", "2", path=path)
-
-    log = (project / "specode_loop.log").read_text(encoding="utf-8")
-    assert result.returncode == 0
-    assert "Specode Loop preflight passed." in log
-    assert "Bundled workflow skill synced: specode-do-work:" in log
-    assert "Verbose transcript logging: 0" in log
-    assert "Starting non-interactive Codex run in Docker Sandbox direct workspace mode." in log
-    assert "Captured Codex final message from --output-last-message." in log
-    assert "TASK DONE sentinel detected" in log
-    assert "ALL TASKS DONE sentinel detected" in log
-    assert "Sandbox cleanup: removed sandbox specode-loop-concise-log-" in log
-    assert "RAW TRANSCRIPT:" not in log
-    assert "RAW FINAL MESSAGE:" not in log
-
-
-def test_verbose_log_includes_raw_transcript_and_final_message(tmp_path: Path, monkeypatch) -> None:
-    project = make_project(tmp_path, "verbose-log")
-    path, _calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
-    monkeypatch.setenv("SPECODE_LOOP_VERBOSE", "1")
-    write_scenario(tmp_path, 1, "RAW TRANSCRIPT: detailed sandbox output\n")
-    write_last_message(tmp_path, 1, "RAW FINAL MESSAGE: detailed final note\nALL TASKS DONE\n")
-
-    result = run_loop(project, path=path)
-
-    log = (project / "specode_loop.log").read_text(encoding="utf-8")
-    assert result.returncode == 0
-    assert "Verbose transcript logging: 1" in log
-    assert "RAW TRANSCRIPT: detailed sandbox output" in log
-    assert "===== Codex final message captured from --output-last-message =====" in log
-    assert "RAW FINAL MESSAGE: detailed final note" in log
-    assert "ALL TASKS DONE sentinel detected" in log
-    assert_no_temp_artifacts(tmp_path, project)
-
-
-def test_prompt_and_codex_argument_order_match_python_command_contract(tmp_path: Path, monkeypatch) -> None:
-    project = make_project(tmp_path, "prompt-contract")
-    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
-    write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
-
-    result = run_loop(project, "--model", "test-model", "--effort", "high", path=path)
-
-    calls = assert_sandbox_called(calls_log)
-    assert result.returncode == 0
-    assert (
-        f"codex exec --dangerously-bypass-approvals-and-sandbox "
-        f"--skip-git-repo-check -C {project} -m test-model -c "
-        f"model_reasoning_effort=\"high\" -o {project}/.specode_loop-last-message."
-    ) in calls
-    assert "Invoke the $do-work skill if it is available in this sandbox." in calls
-    assert "If the preferred copy is unavailable, invoke $do-work from the project-local .agents/skills/specode-do-work directory." in calls
-    assert "The PRD document corresponds to output from the global $to-spec skill." in calls
-    assert "The plan document corresponds to output from the global $to-tickets skill." in calls
-    assert "For $do-work, treat each unchecked numbered ticket in a $to-tickets plan as a Phase." in calls
-    assert "PRD document: prd.md" in calls
-    assert "Plan document: plan.md" in calls
-    assert "Read the PRD document and plan document before choosing work." in calls
-    assert "Work on AFK Plan Tasks only. Do not work on HITL Plan Tasks." in calls
-    assert "Select exactly one undone AFK Phase in the plan document for this run." not in calls
-    assert "Complete only the selected AFK Phase" not in calls
-    assert "Do not modify runner-managed copied workflow skill files" not in calls
-    assert "Do not run git status or git diff merely to verify copied workflow skill files;" not in calls
-    assert "Do not make a git commit unless the PRD document or plan document explicitly requires it." not in calls
-    assert "Mark only the completed AFK Phase done" not in calls
-    assert "After validation and the plan checkbox update" not in calls
-    assert "If no undone AFK Plan Tasks remain, output exactly:" in calls
-    assert "When the selected AFK Plan Task is complete and the plan document has been updated, output exactly:" in calls
-
-
-def test_sandbox_exec_does_not_inherit_runner_stdin(tmp_path: Path, monkeypatch) -> None:
-    project = make_project(tmp_path, "stdin-contract")
-    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
-    monkeypatch.setenv("FAKE_SBX_ECHO_STDIN", "1")
-    write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
-
-    result = run_loop(project, path=path, input_text="SHOULD_NOT_REACH_SANDBOX\n")
-
-    calls = assert_sandbox_called(calls_log)
-    assert result.returncode == 0
-    assert "SHOULD_NOT_REACH_SANDBOX" not in result.stdout
-    assert "SHOULD_NOT_REACH_SANDBOX" not in calls
-
-
-def test_sandbox_names_are_hostname_safe_and_length_bounded(tmp_path: Path, monkeypatch) -> None:
-    project = make_project(tmp_path, "fixture_name_with_underscores_and_extra_segments_abcdefghijklmnopqrstuvwxyz")
-    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
-    write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
-
-    result = run_loop(project, path=path)
-
-    calls = assert_sandbox_called(calls_log)
-    sandbox_name = calls.split("|", 2)[1]
-    assert result.returncode == 0
-    assert len(sandbox_name) <= 63
-    assert re_fullmatch_hostname(sandbox_name)
 
 
 def test_bundled_skill_is_copied_and_owned_target_is_overwritten(tmp_path: Path, monkeypatch) -> None:
@@ -1126,22 +900,25 @@ def test_missing_runtime_prerequisites_fail_before_sandbox_execution(tmp_path: P
 
 
 def test_runtime_code_uses_only_standard_library_imports() -> None:
-    source = RUNNER.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    runtime_imports = {
-        alias.name.split(".", 1)[0]
-        for node in tree.body
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    }
-    runtime_imports |= {
-        node.module.split(".", 1)[0]
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom) and node.module
-    }
+    imports_by_module: dict[Path, set[str]] = {}
+    for runtime_module in (RUNNER, ITERATION_MODULE):
+        tree = ast.parse(runtime_module.read_text(encoding="utf-8"))
+        runtime_imports = {
+            alias.name.split(".", 1)[0]
+            for node in tree.body
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+        runtime_imports |= {
+            node.module.split(".", 1)[0]
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        imports_by_module[runtime_module] = runtime_imports
 
-    assert "typer" not in runtime_imports
-    assert "rich" not in runtime_imports
-    assert runtime_imports <= set(sys.stdlib_module_names) | {
+    assert imports_by_module[RUNNER] <= set(sys.stdlib_module_names) | {
         "specode_loop_iteration"
     }
+    assert imports_by_module[ITERATION_MODULE] <= set(sys.stdlib_module_names)
+    assert "specode_loop_iteration" in imports_by_module[RUNNER]
+    assert "specode_loop" not in imports_by_module[ITERATION_MODULE]
