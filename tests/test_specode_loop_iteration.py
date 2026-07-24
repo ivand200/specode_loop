@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import signal
 import sys
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -26,7 +27,9 @@ def _install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
         f"#!{sys.executable}\n"
         "import json\n"
         "import os\n"
+        "import signal\n"
         "import sys\n"
+        "import time\n"
         "from pathlib import Path\n"
         "\n"
         "args = sys.argv[1:]\n"
@@ -49,6 +52,22 @@ def _install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
         "        Path(resource).write_text(args[2], encoding='utf-8')\n"
         "    raise SystemExit(int(os.environ.get('FAKE_SBX_CREATE_STATUS', '0')))\n"
         "elif args[0] == 'exec':\n"
+        "    interruption_mode = os.environ.get('FAKE_SBX_INTERRUPTION_MODE')\n"
+        "    if interruption_mode:\n"
+        "        process_log = Path(os.environ['FAKE_SBX_PROCESS_LOG'])\n"
+        "        process_log.write_text(f'started {os.getpid()}\\n', encoding='utf-8')\n"
+        "        def handle_termination(signum, frame):\n"
+        "            with process_log.open('a', encoding='utf-8') as log:\n"
+        "                log.write('terminate\\n')\n"
+        "            if interruption_mode == 'graceful':\n"
+        "                with process_log.open('a', encoding='utf-8') as log:\n"
+        "                    log.write('exited\\n')\n"
+        "                raise SystemExit(0)\n"
+        "        signal.signal(signal.SIGTERM, handle_termination)\n"
+        "        print('active Codex process', flush=True)\n"
+        "        os.kill(os.getppid(), signal.SIGUSR1)\n"
+        "        while True:\n"
+        "            time.sleep(10)\n"
         "    print(os.environ.get('FAKE_SBX_EXEC_OUTPUT', 'streamed Codex progress'))\n"
         "    stderr_output = os.environ.get('FAKE_SBX_EXEC_STDERR')\n"
         "    if stderr_output:\n"
@@ -69,6 +88,19 @@ def _install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
         "        Path(sys.argv[0]).unlink()\n"
         "    raise SystemExit(int(os.environ.get('FAKE_SBX_EXEC_STATUS', '0')))\n"
         "elif args[0] == 'rm':\n"
+        "    process_observations = os.environ.get('FAKE_SBX_PROCESS_OBSERVATIONS')\n"
+        "    if process_observations:\n"
+        "        process_log = Path(os.environ['FAKE_SBX_PROCESS_LOG'])\n"
+        "        child_pid = int(process_log.read_text(encoding='utf-8').split()[1])\n"
+        "        try:\n"
+        "            os.kill(child_pid, 0)\n"
+        "        except ProcessLookupError:\n"
+        "            child_alive = False\n"
+        "        else:\n"
+        "            child_alive = True\n"
+        "        Path(process_observations).write_text(json.dumps({\n"
+        "            'child_alive': child_alive,\n"
+        "        }), encoding='utf-8')\n"
         "    observations = os.environ.get('FAKE_SBX_ARTIFACT_OBSERVATIONS')\n"
         "    if observations:\n"
         "        project = Path(os.environ['FAKE_SBX_TARGET_PROJECT'])\n"
@@ -710,3 +742,82 @@ def test_broken_artifact_symlink_is_removed_during_cleanup(
 
     assert outcome is SandboxIterationOutcome.FAILED
     assert not list(request.target_project.glob(".specode_loop-last-message.*"))
+
+
+def test_interruption_terminates_and_reaps_active_child_before_attempt_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    process_log = tmp_path / "process.log"
+    observations = tmp_path / "process-observations.json"
+    monkeypatch.setenv("FAKE_SBX_INTERRUPTION_MODE", "graceful")
+    monkeypatch.setenv("FAKE_SBX_PROCESS_LOG", str(process_log))
+    monkeypatch.setenv("FAKE_SBX_PROCESS_OBSERVATIONS", str(observations))
+
+    def interrupt_iteration(signum: int, frame: object) -> None:
+        raise SystemExit(130)
+
+    previous_handler = signal.signal(signal.SIGUSR1, interrupt_iteration)
+    try:
+        with pytest.raises(SystemExit) as raised:
+            run_sandbox_iteration(request)
+    finally:
+        signal.signal(signal.SIGUSR1, previous_handler)
+
+    assert raised.value.code == 130
+    process_events = process_log.read_text(encoding="utf-8").splitlines()
+    assert process_events[0].startswith("started ")
+    assert process_events[1:] == ["terminate", "exited"]
+    assert json.loads(observations.read_text(encoding="utf-8")) == {
+        "child_alive": False,
+    }
+    assert not list(tmp_path.glob("specode_loop.*"))
+    assert not list(request.target_project.glob(".specode_loop-last-message.*"))
+    calls = [
+        json.loads(line)
+        for line in Path(os.environ["FAKE_SBX_CALLS"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [call[0] for call in calls] == ["create", "exec", "rm"]
+
+
+def test_exception_kills_and_reaps_uncooperative_child_before_attempt_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    process_log = tmp_path / "process.log"
+    observations = tmp_path / "process-observations.json"
+    monkeypatch.setenv("FAKE_SBX_INTERRUPTION_MODE", "requires-kill")
+    monkeypatch.setenv("FAKE_SBX_PROCESS_LOG", str(process_log))
+    monkeypatch.setenv("FAKE_SBX_PROCESS_OBSERVATIONS", str(observations))
+    original_error = RuntimeError("unexpected streaming failure")
+
+    def fail_iteration(signum: int, frame: object) -> None:
+        raise original_error
+
+    previous_handler = signal.signal(signal.SIGUSR1, fail_iteration)
+    try:
+        with pytest.raises(RuntimeError) as raised:
+            run_sandbox_iteration(request)
+    finally:
+        signal.signal(signal.SIGUSR1, previous_handler)
+
+    assert raised.value is original_error
+    process_events = process_log.read_text(encoding="utf-8").splitlines()
+    assert process_events[0].startswith("started ")
+    assert process_events[1:] == ["terminate"]
+    assert json.loads(observations.read_text(encoding="utf-8")) == {
+        "child_alive": False,
+    }
+    assert not list(tmp_path.glob("specode_loop.*"))
+    assert not list(request.target_project.glob(".specode_loop-last-message.*"))
+    calls = [
+        json.loads(line)
+        for line in Path(os.environ["FAKE_SBX_CALLS"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [call[0] for call in calls] == ["create", "exec", "rm"]

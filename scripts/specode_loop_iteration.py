@@ -125,15 +125,55 @@ def _stream_sandbox_command(
             text=True,
             env=_sandbox_environment(),
         )
-        assert process.stdout is not None
-        for line in process.stdout:
-            print(line, end="", flush=True)
-            output.write(line)
-            output.flush()
-            if request.verbose_transcript:
-                with request.project_log.open("a", encoding="utf-8") as log:
-                    log.write(line)
-        return process.wait()
+        try:
+            assert process.stdout is not None
+            for line in process.stdout:
+                print(line, end="", flush=True)
+                output.write(line)
+                output.flush()
+                if request.verbose_transcript:
+                    with request.project_log.open("a", encoding="utf-8") as log:
+                        log.write(line)
+            return process.wait()
+        except BaseException:
+            _terminate_and_reap(process)
+            raise
+
+
+def _terminate_and_reap(process: _subprocess.Popen[str]) -> None:
+    try:
+        if process.poll() is not None:
+            return
+    except BaseException:
+        pass
+
+    try:
+        process.terminate()
+    except BaseException:
+        pass
+
+    try:
+        process.wait(timeout=1)
+        return
+    except _subprocess.TimeoutExpired:
+        pass
+    except BaseException:
+        pass
+
+    killed = False
+    try:
+        process.kill()
+        killed = True
+    except BaseException:
+        pass
+
+    try:
+        if killed:
+            process.wait()
+        else:
+            process.wait(timeout=0)
+    except BaseException:
+        pass
 
 
 def _contains_exact_line(path: _Path, sentinel: str) -> bool:
