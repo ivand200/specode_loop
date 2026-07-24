@@ -147,6 +147,172 @@ def _prepare_iteration_request(
     )
 
 
+@pytest.mark.parametrize(
+    ("iteration", "maximum_iterations"),
+    [
+        (0, 3),
+        (4, 3),
+        (1, 0),
+    ],
+)
+def test_invalid_iteration_position_fails_before_sandbox_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    iteration: int,
+    maximum_iterations: int,
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    invalid_request = SandboxIterationRequest(
+        target_project=request.target_project,
+        prd_role_path=request.prd_role_path,
+        plan_role_path=request.plan_role_path,
+        iteration=iteration,
+        maximum_iterations=maximum_iterations,
+        model=request.model,
+        reasoning_effort=request.reasoning_effort,
+        project_log=request.project_log,
+        verbose_transcript=request.verbose_transcript,
+    )
+
+    with pytest.raises(ValueError, match="iteration"):
+        run_sandbox_iteration(invalid_request)
+
+    assert not Path(os.environ["FAKE_SBX_CALLS"]).exists()
+    assert not list(tmp_path.glob("specode_loop.*"))
+
+
+@pytest.mark.parametrize("target_kind", ["relative", "missing", "file"])
+def test_invalid_target_project_fails_before_sandbox_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_kind: str,
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    if target_kind == "relative":
+        monkeypatch.chdir(tmp_path)
+        target_project = Path("project")
+    elif target_kind == "missing":
+        target_project = tmp_path / "missing-project"
+    else:
+        target_project = tmp_path / "not-a-directory"
+        target_project.write_text("not a Target Project\n", encoding="utf-8")
+    invalid_request = SandboxIterationRequest(
+        target_project=target_project,
+        prd_role_path=request.prd_role_path,
+        plan_role_path=request.plan_role_path,
+        iteration=request.iteration,
+        maximum_iterations=request.maximum_iterations,
+        model=request.model,
+        reasoning_effort=request.reasoning_effort,
+        project_log=request.project_log,
+        verbose_transcript=request.verbose_transcript,
+    )
+
+    with pytest.raises(ValueError, match="Target Project"):
+        run_sandbox_iteration(invalid_request)
+
+    assert not Path(os.environ["FAKE_SBX_CALLS"]).exists()
+    assert not list(tmp_path.glob("specode_loop.*"))
+
+
+@pytest.mark.parametrize("role", ["prd", "plan"])
+@pytest.mark.parametrize("path_kind", ["absolute", "parent", "symlink"])
+def test_escaping_planning_document_role_path_fails_before_sandbox_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    path_kind: str,
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    if path_kind == "absolute":
+        invalid_role_path = request.target_project / f"{role}.md"
+    elif path_kind == "parent":
+        invalid_role_path = Path("..") / f"outside-{role}.md"
+    else:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (request.target_project / "escape-link").symlink_to(
+            outside, target_is_directory=True
+        )
+        invalid_role_path = Path("escape-link") / f"{role}.md"
+    invalid_request = SandboxIterationRequest(
+        target_project=request.target_project,
+        prd_role_path=(
+            invalid_role_path if role == "prd" else request.prd_role_path
+        ),
+        plan_role_path=(
+            invalid_role_path if role == "plan" else request.plan_role_path
+        ),
+        iteration=request.iteration,
+        maximum_iterations=request.maximum_iterations,
+        model=request.model,
+        reasoning_effort=request.reasoning_effort,
+        project_log=request.project_log,
+        verbose_transcript=request.verbose_transcript,
+    )
+
+    with pytest.raises(ValueError, match=f"{role} role path"):
+        run_sandbox_iteration(invalid_request)
+
+    assert not Path(os.environ["FAKE_SBX_CALLS"]).exists()
+    assert not list(tmp_path.glob("specode_loop.*"))
+
+
+@pytest.mark.parametrize("log_kind", ["missing", "directory", "read-only"])
+def test_unusable_project_log_fails_before_sandbox_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    log_kind: str,
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    request.project_log.unlink()
+    if log_kind == "directory":
+        request.project_log.mkdir()
+    elif log_kind == "read-only":
+        request.project_log.write_text("initialized\n", encoding="utf-8")
+        request.project_log.chmod(0o444)
+
+    with pytest.raises(ValueError, match="project log"):
+        run_sandbox_iteration(request)
+
+    assert not Path(os.environ["FAKE_SBX_CALLS"]).exists()
+    assert not list(tmp_path.glob("specode_loop.*"))
+
+
+@pytest.mark.parametrize(
+    ("model", "reasoning_effort", "message"),
+    [
+        (None, "high", "model"),
+        ("test-model", "enormous", "reasoning_effort"),
+    ],
+)
+def test_invalid_execution_choice_fails_before_sandbox_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    model: object,
+    reasoning_effort: str,
+    message: str,
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    invalid_request = SandboxIterationRequest(
+        target_project=request.target_project,
+        prd_role_path=request.prd_role_path,
+        plan_role_path=request.plan_role_path,
+        iteration=request.iteration,
+        maximum_iterations=request.maximum_iterations,
+        model=model,  # type: ignore[arg-type]
+        reasoning_effort=reasoning_effort,
+        project_log=request.project_log,
+        verbose_transcript=request.verbose_transcript,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        run_sandbox_iteration(invalid_request)
+
+    assert not Path(os.environ["FAKE_SBX_CALLS"]).exists()
+    assert not list(tmp_path.glob("specode_loop.*"))
+
+
 def test_one_complete_iteration_reports_all_tasks_done_and_releases_resources(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

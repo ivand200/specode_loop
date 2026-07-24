@@ -23,6 +23,7 @@ _FALLBACK_WORKFLOW_SKILL = "specode-do-work"
 _TASK_DONE_SENTINEL = "TASK DONE"
 _ALL_TASKS_DONE_SENTINEL = "ALL TASKS DONE"
 _FAILURE_EXCERPT_LINES = 30
+_ALLOWED_REASONING_EFFORTS = {"", "minimal", "low", "medium", "high", "xhigh"}
 
 
 @_dataclass(frozen=True)
@@ -42,6 +43,51 @@ class SandboxIterationOutcome(_Enum):
     PLAN_TASK_COMPLETED = _auto()
     ALL_PLAN_TASKS_COMPLETED = _auto()
     FAILED = _auto()
+
+
+def _validate_request(request: SandboxIterationRequest) -> None:
+    if not 1 <= request.iteration <= request.maximum_iterations:
+        raise ValueError(
+            "iteration must be between 1 and maximum_iterations inclusive"
+        )
+    try:
+        resolved_target_project = request.target_project.resolve(strict=True)
+    except OSError as error:
+        raise ValueError("Target Project must exist and be resolved") from error
+    if (
+        request.target_project != resolved_target_project
+        or not resolved_target_project.is_dir()
+    ):
+        raise ValueError("Target Project must be an existing resolved directory")
+    for role, role_path in (
+        ("prd", request.prd_role_path),
+        ("plan", request.plan_role_path),
+    ):
+        if role_path.is_absolute():
+            raise ValueError(f"{role} role path must be Target Project-relative")
+        resolved_role_path = (resolved_target_project / role_path).resolve()
+        try:
+            resolved_role_path.relative_to(resolved_target_project)
+        except ValueError as error:
+            raise ValueError(
+                f"{role} role path must resolve inside the Target Project"
+            ) from error
+    if not request.project_log.is_file():
+        raise ValueError("project log must be an initialized writable file")
+    try:
+        with request.project_log.open("a", encoding="utf-8"):
+            pass
+    except OSError as error:
+        raise ValueError("project log must be an initialized writable file") from error
+    if not isinstance(request.model, str) or "\0" in request.model:
+        raise ValueError("model must be a validated string choice")
+    if (
+        not isinstance(request.reasoning_effort, str)
+        or request.reasoning_effort not in _ALLOWED_REASONING_EFFORTS
+    ):
+        raise ValueError(
+            "reasoning_effort must be one of: minimal, low, medium, high, xhigh"
+        )
 
 
 def _timestamp() -> str:
@@ -319,6 +365,7 @@ def _report_no_sentinel_failure(
 def run_sandbox_iteration(
     request: SandboxIterationRequest,
 ) -> SandboxIterationOutcome:
+    _validate_request(request)
     sandbox_name = _new_sandbox_name(request.target_project, request.iteration)
     transcript = _make_temp_output(request.iteration)
     final_message = request.target_project / (
