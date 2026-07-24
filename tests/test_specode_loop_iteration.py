@@ -23,7 +23,7 @@ def _install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
     calls_log = tmp_path / "sbx-calls.jsonl"
     fake_sbx = bin_dir / "sbx"
     fake_sbx.write_text(
-        "#!/usr/bin/env python3\n"
+        f"#!{sys.executable}\n"
         "import json\n"
         "import os\n"
         "import sys\n"
@@ -55,10 +55,28 @@ def _install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
         "        print(stderr_output, file=sys.stderr)\n"
         "    output_path = Path(args[args.index('-o') + 1])\n"
         "    final_message = os.environ.get('FAKE_SBX_FINAL_MESSAGE', 'ALL TASKS DONE\\n')\n"
-        "    if final_message:\n"
+        "    if os.environ.get('FAKE_SBX_FINAL_MESSAGE_DIRECTORY') == '1':\n"
+        "        output_path.mkdir()\n"
+        "    elif os.environ.get('FAKE_SBX_FINAL_MESSAGE_BROKEN_SYMLINK') == '1':\n"
+        "        output_path.symlink_to(output_path.with_name('missing-final-message'))\n"
+        "    elif final_message:\n"
         "        output_path.write_text(final_message, encoding='utf-8')\n"
+        "    if os.environ.get('FAKE_SBX_TRANSCRIPT_DIRECTORY') == '1':\n"
+        "        transcript = next(Path(os.environ['TMPDIR']).glob('specode_loop.*'))\n"
+        "        transcript.unlink()\n"
+        "        transcript.mkdir()\n"
+        "    if os.environ.get('FAKE_SBX_REMOVE_EXECUTABLE') == '1':\n"
+        "        Path(sys.argv[0]).unlink()\n"
         "    raise SystemExit(int(os.environ.get('FAKE_SBX_EXEC_STATUS', '0')))\n"
         "elif args[0] == 'rm':\n"
+        "    observations = os.environ.get('FAKE_SBX_ARTIFACT_OBSERVATIONS')\n"
+        "    if observations:\n"
+        "        project = Path(os.environ['FAKE_SBX_TARGET_PROJECT'])\n"
+        "        tmp_dir = Path(os.environ['TMPDIR'])\n"
+        "        Path(observations).write_text(json.dumps({\n"
+        "            'final_messages': sorted(path.name for path in project.glob('.specode_loop-last-message.*')),\n"
+        "            'transcripts': sorted(path.name for path in tmp_dir.glob('specode_loop.*')),\n"
+        "        }), encoding='utf-8')\n"
         "    resource = os.environ.get('FAKE_SBX_RESOURCE')\n"
         "    if resource:\n"
         "        Path(resource).unlink(missing_ok=True)\n"
@@ -132,8 +150,7 @@ def test_one_complete_iteration_reports_all_tasks_done_and_releases_resources(
     assert "streamed Codex progress" in capsys.readouterr().out
 
     calls = [
-        json.loads(line)
-        for line in calls_log.read_text(encoding="utf-8").splitlines()
+        json.loads(line) for line in calls_log.read_text(encoding="utf-8").splitlines()
     ]
     assert len(calls) == 3
     create, execute, remove = calls
@@ -159,7 +176,9 @@ def test_one_complete_iteration_reports_all_tasks_done_and_releases_resources(
     assert "Invoke the $do-work skill if it is available in this sandbox." in prompt
     assert "PRD document: prd.md" in prompt
     assert "Plan document: plan.md" in prompt
-    assert "If no undone AFK Plan Tasks remain, output exactly:\nALL TASKS DONE" in prompt
+    assert (
+        "If no undone AFK Plan Tasks remain, output exactly:\nALL TASKS DONE" in prompt
+    )
     assert remove == ["rm", "--force", sandbox_name]
     assert not list(tmp_path.glob("specode_loop.*"))
     assert not list(project.glob(".specode_loop-last-message.*"))
@@ -270,7 +289,12 @@ def test_all_tasks_done_takes_precedence_when_both_exact_sentinels_appear(
     ("command", "status", "sentinel", "expected"),
     [
         ("exec", "42", "TASK DONE\n", SandboxIterationOutcome.PLAN_TASK_COMPLETED),
-        ("create", "23", "ALL TASKS DONE", SandboxIterationOutcome.ALL_PLAN_TASKS_COMPLETED),
+        (
+            "create",
+            "23",
+            "ALL TASKS DONE",
+            SandboxIterationOutcome.ALL_PLAN_TASKS_COMPLETED,
+        ),
         ("exec", "7", "still working\n", SandboxIterationOutcome.FAILED),
     ],
 )
@@ -353,8 +377,7 @@ def test_custom_request_values_reach_codex_in_the_command_contract(
     assert outcome is SandboxIterationOutcome.ALL_PLAN_TASKS_COMPLETED
     calls_log = Path(os.environ["FAKE_SBX_CALLS"])
     calls = [
-        json.loads(line)
-        for line in calls_log.read_text(encoding="utf-8").splitlines()
+        json.loads(line) for line in calls_log.read_text(encoding="utf-8").splitlines()
     ]
     execute = calls[1]
     sandbox_name = calls[0][2]
@@ -444,8 +467,7 @@ def test_failed_creation_skips_codex_and_removes_the_assigned_sandbox_once(
     assert outcome is SandboxIterationOutcome.FAILED
     calls_log = Path(os.environ["FAKE_SBX_CALLS"])
     calls = [
-        json.loads(line)
-        for line in calls_log.read_text(encoding="utf-8").splitlines()
+        json.loads(line) for line in calls_log.read_text(encoding="utf-8").splitlines()
     ]
     assert [call[0] for call in calls] == ["create", "rm"]
     assert calls[1] == ["rm", "--force", calls[0][2]]
@@ -458,9 +480,7 @@ def test_concise_reporting_captures_final_message_without_raw_output_in_log(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     request = _prepare_iteration_request(tmp_path, monkeypatch)
-    monkeypatch.setenv(
-        "FAKE_SBX_EXEC_OUTPUT", "RAW TRANSCRIPT: internal work details"
-    )
+    monkeypatch.setenv("FAKE_SBX_EXEC_OUTPUT", "RAW TRANSCRIPT: internal work details")
     monkeypatch.setenv(
         "FAKE_SBX_FINAL_MESSAGE", "RAW FINAL MESSAGE: plan summary\nALL TASKS DONE\n"
     )
@@ -547,9 +567,11 @@ def test_failure_reporting_includes_bounded_evidence_before_visible_cleanup(
     assert "For the full raw transcript, rerun with SPECODE_LOOP_VERBOSE=1." in terminal
     cleanup = "Sandbox cleanup: removed sandbox "
     assert cleanup in terminal
-    assert terminal.index("FAILED, no exact success sentinel detected") < terminal.index(
-        "Sandbox iteration failed without a success sentinel."
-    ) < terminal.index(cleanup)
+    assert (
+        terminal.index("FAILED, no exact success sentinel detected")
+        < terminal.index("Sandbox iteration failed without a success sentinel.")
+        < terminal.index(cleanup)
+    )
     assert "Sandbox iteration failed without a success sentinel." in log
     assert cleanup in log
 
@@ -572,3 +594,119 @@ def test_failed_cleanup_is_visible_without_replacing_successful_classification(
     assert "(exit code: 23)." in terminal
     assert failure in log
     assert "(exit code: 23)." in log
+
+
+def test_artifact_cleanup_failure_does_not_skip_sandbox_removal_or_replace_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_SBX_FINAL_MESSAGE_DIRECTORY", "1")
+
+    with pytest.raises(IsADirectoryError) as raised:
+        run_sandbox_iteration(request)
+
+    calls = [
+        json.loads(line)
+        for line in Path(os.environ["FAKE_SBX_CALLS"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [call[0] for call in calls] == ["create", "exec", "rm"]
+    assert ".specode_loop-last-message" in str(raised.value.filename)
+    assert "Artifact cleanup: failed to remove artifact " in capsys.readouterr().out
+
+
+def test_attempt_artifacts_are_absent_before_forced_sandbox_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    observations = tmp_path / "artifact-observations.json"
+    monkeypatch.setenv("FAKE_SBX_ARTIFACT_OBSERVATIONS", str(observations))
+    monkeypatch.setenv("FAKE_SBX_TARGET_PROJECT", str(request.target_project))
+
+    outcome = run_sandbox_iteration(request)
+
+    assert outcome is SandboxIterationOutcome.ALL_PLAN_TASKS_COMPLETED
+    assert json.loads(observations.read_text(encoding="utf-8")) == {
+        "final_messages": [],
+        "transcripts": [],
+    }
+
+
+def test_process_start_failure_releases_artifacts_and_preserves_the_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
+
+    with pytest.raises(FileNotFoundError) as raised:
+        run_sandbox_iteration(request)
+
+    assert raised.value.filename == "sbx"
+    assert not list(tmp_path.glob("specode_loop.*"))
+    assert not list(request.target_project.glob(".specode_loop-last-message.*"))
+    assert "Sandbox cleanup: failed to remove sandbox " in capsys.readouterr().out
+
+
+def test_sandbox_cleanup_start_failure_does_not_replace_classified_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_SBX_REMOVE_EXECUTABLE", "1")
+    monkeypatch.setenv("PATH", os.environ["PATH"].split(os.pathsep)[0])
+
+    outcome = run_sandbox_iteration(request)
+
+    assert outcome is SandboxIterationOutcome.ALL_PLAN_TASKS_COMPLETED
+    assert not list(tmp_path.glob("specode_loop.*"))
+    assert not list(request.target_project.glob(".specode_loop-last-message.*"))
+    terminal = capsys.readouterr().out
+    assert "Sandbox cleanup: failed to remove sandbox " in terminal
+    assert "FileNotFoundError" in terminal
+
+
+def test_later_cleanup_stages_continue_after_the_first_artifact_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    observations = tmp_path / "artifact-observations.json"
+    monkeypatch.setenv("FAKE_SBX_TRANSCRIPT_DIRECTORY", "1")
+    monkeypatch.setenv("FAKE_SBX_ARTIFACT_OBSERVATIONS", str(observations))
+    monkeypatch.setenv("FAKE_SBX_TARGET_PROJECT", str(request.target_project))
+
+    with pytest.raises(IsADirectoryError) as raised:
+        run_sandbox_iteration(request)
+
+    observed = json.loads(observations.read_text(encoding="utf-8"))
+    assert "specode_loop." in str(raised.value.filename)
+    assert observed["final_messages"] == []
+    assert len(observed["transcripts"]) == 1
+    calls = [
+        json.loads(line)
+        for line in Path(os.environ["FAKE_SBX_CALLS"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [call[0] for call in calls] == ["create", "exec", "rm"]
+
+
+def test_broken_artifact_symlink_is_removed_during_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_SBX_FINAL_MESSAGE_BROKEN_SYMLINK", "1")
+
+    outcome = run_sandbox_iteration(request)
+
+    assert outcome is SandboxIterationOutcome.FAILED
+    assert not list(request.target_project.glob(".specode_loop-last-message.*"))

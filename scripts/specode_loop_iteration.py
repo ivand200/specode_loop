@@ -3,6 +3,7 @@ from __future__ import annotations
 import os as _os
 import re as _re
 import subprocess as _subprocess
+import sys as _sys
 import tempfile as _tempfile
 from dataclasses import dataclass as _dataclass
 from datetime import datetime as _datetime
@@ -62,9 +63,7 @@ def _new_sandbox_name(target_project: _Path, iteration: int) -> str:
     project_name = _sanitize_name_part(target_project.name)
     project_name = project_name[:20].rstrip("-") or "project"
     run_stamp = _datetime.now().strftime("%Y%m%d-%H%M%S")
-    name = (
-        f"specode-loop-{project_name}-{run_stamp}-{iteration:02d}-{_os.getpid()}"
-    )
+    name = f"specode-loop-{project_name}-{run_stamp}-{iteration:02d}-{_os.getpid()}"
     return name[:63].rstrip("-")
 
 
@@ -141,14 +140,84 @@ def _contains_exact_line(path: _Path, sentinel: str) -> bool:
     if not path.exists():
         return False
     return any(
-        line == sentinel
-        for line in path.read_text(encoding="utf-8").splitlines()
+        line == sentinel for line in path.read_text(encoding="utf-8").splitlines()
     )
 
 
 def _remove_artifact(path: _Path) -> None:
-    if path.exists():
-        path.unlink()
+    path.unlink(missing_ok=True)
+
+
+def _cleanup_iteration(
+    request: SandboxIterationRequest,
+    outcome: SandboxIterationOutcome,
+    transcript: _Path,
+    final_message: _Path,
+    sandbox_name: str,
+) -> BaseException | None:
+    cleanup_control_flow: BaseException | None = None
+
+    for artifact in (transcript, final_message):
+        try:
+            _remove_artifact(artifact)
+        except BaseException as error:
+            if not isinstance(error, Exception) and cleanup_control_flow is None:
+                cleanup_control_flow = error
+            try:
+                _log_line(
+                    request,
+                    f"Artifact cleanup: failed to remove artifact {artifact} "
+                    f"({type(error).__name__}: {error}).",
+                )
+            except BaseException as reporting_error:
+                if (
+                    not isinstance(reporting_error, Exception)
+                    and cleanup_control_flow is None
+                ):
+                    cleanup_control_flow = reporting_error
+
+    cleanup_status: int | None = None
+    cleanup_error: BaseException | None = None
+    try:
+        cleanup = _subprocess.run(
+            ["sbx", "rm", "--force", sandbox_name],
+            stdin=_subprocess.DEVNULL,
+            stdout=_subprocess.DEVNULL,
+            stderr=_subprocess.DEVNULL,
+            text=True,
+            check=False,
+            env=_sandbox_environment(),
+        )
+        cleanup_status = cleanup.returncode
+    except BaseException as error:
+        cleanup_error = error
+        if not isinstance(error, Exception) and cleanup_control_flow is None:
+            cleanup_control_flow = error
+
+    if cleanup_error is not None:
+        message = (
+            f"Sandbox cleanup: failed to remove sandbox {sandbox_name} "
+            f"({type(cleanup_error).__name__}: {cleanup_error})."
+        )
+    elif cleanup_status == 0:
+        message = f"Sandbox cleanup: removed sandbox {sandbox_name}."
+    else:
+        message = (
+            f"Sandbox cleanup: failed to remove sandbox {sandbox_name} "
+            f"(exit code: {cleanup_status})."
+        )
+
+    try:
+        if outcome is SandboxIterationOutcome.FAILED or cleanup_status != 0:
+            _log_line(request, message)
+        else:
+            with request.project_log.open("a", encoding="utf-8") as log:
+                log.write(f"{message}\n")
+    except BaseException as reporting_error:
+        if not isinstance(reporting_error, Exception) and cleanup_control_flow is None:
+            cleanup_control_flow = reporting_error
+
+    return cleanup_control_flow
 
 
 def _report_final_message(
@@ -202,9 +271,7 @@ def _report_no_sentinel_failure(
         if captured_lines
         else ["(no output captured)"]
     )
-    lines.append(
-        "For the full raw transcript, rerun with SPECODE_LOOP_VERBOSE=1."
-    )
+    lines.append("For the full raw transcript, rerun with SPECODE_LOOP_VERBOSE=1.")
     for line in lines:
         _log_line(request, line)
 
@@ -222,6 +289,7 @@ def run_sandbox_iteration(
     command_status = 0
     outcome = SandboxIterationOutcome.FAILED
     try:
+        _remove_artifact(final_message)
         _log_line(request)
         _log_line(
             request,
@@ -290,29 +358,13 @@ def run_sandbox_iteration(
             )
         return outcome
     finally:
-        _remove_artifact(transcript)
-        _remove_artifact(final_message)
-        cleanup = _subprocess.run(
-            ["sbx", "rm", "--force", sandbox_name],
-            stdin=_subprocess.DEVNULL,
-            stdout=_subprocess.DEVNULL,
-            stderr=_subprocess.DEVNULL,
-            text=True,
-            check=False,
-            env=_sandbox_environment(),
+        primary_error = _sys.exception()
+        cleanup_control_flow = _cleanup_iteration(
+            request,
+            outcome,
+            transcript,
+            final_message,
+            sandbox_name,
         )
-        if cleanup.returncode == 0:
-            message = f"Sandbox cleanup: removed sandbox {sandbox_name}."
-        else:
-            message = (
-                f"Sandbox cleanup: failed to remove sandbox {sandbox_name} "
-                f"(exit code: {cleanup.returncode})."
-            )
-        if (
-            outcome is SandboxIterationOutcome.FAILED
-            or cleanup.returncode != 0
-        ):
-            _log_line(request, message)
-        else:
-            with request.project_log.open("a", encoding="utf-8") as log:
-                log.write(f"{message}\n")
+        if primary_error is None and cleanup_control_flow is not None:
+            raise cleanup_control_flow
