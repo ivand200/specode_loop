@@ -32,17 +32,37 @@ def _install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
         "args = sys.argv[1:]\n"
         "with Path(os.environ['FAKE_SBX_CALLS']).open('a', encoding='utf-8') as log:\n"
         "    log.write(json.dumps(args) + '\\n')\n"
+        "contract_log = os.environ.get('FAKE_SBX_CONTRACT_LOG')\n"
+        "if contract_log:\n"
+        "    with Path(contract_log).open('a', encoding='utf-8') as log:\n"
+        "        log.write(json.dumps({\n"
+        "            'command': args[0],\n"
+        "            'stdin': sys.stdin.read(),\n"
+        "            'openai_api_key': os.environ.get('OPENAI_API_KEY'),\n"
+        "            'codex_api_key': os.environ.get('CODEX_API_KEY'),\n"
+        "            'preserved': os.environ.get('FAKE_SBX_PRESERVED'),\n"
+        "        }) + '\\n')\n"
         "if args[0] == 'create':\n"
         "    print(os.environ.get('FAKE_SBX_CREATE_OUTPUT', 'sandbox created'))\n"
+        "    resource = os.environ.get('FAKE_SBX_RESOURCE')\n"
+        "    if resource and os.environ.get('FAKE_SBX_CREATE_RESOURCE') == '1':\n"
+        "        Path(resource).write_text(args[2], encoding='utf-8')\n"
         "    raise SystemExit(int(os.environ.get('FAKE_SBX_CREATE_STATUS', '0')))\n"
         "elif args[0] == 'exec':\n"
         "    print(os.environ.get('FAKE_SBX_EXEC_OUTPUT', 'streamed Codex progress'))\n"
+        "    stderr_output = os.environ.get('FAKE_SBX_EXEC_STDERR')\n"
+        "    if stderr_output:\n"
+        "        print(stderr_output, file=sys.stderr)\n"
         "    output_path = Path(args[args.index('-o') + 1])\n"
         "    final_message = os.environ.get('FAKE_SBX_FINAL_MESSAGE', 'ALL TASKS DONE\\n')\n"
         "    if final_message:\n"
         "        output_path.write_text(final_message, encoding='utf-8')\n"
         "    raise SystemExit(int(os.environ.get('FAKE_SBX_EXEC_STATUS', '0')))\n"
-        "elif args[0] != 'rm':\n"
+        "elif args[0] == 'rm':\n"
+        "    resource = os.environ.get('FAKE_SBX_RESOURCE')\n"
+        "    if resource:\n"
+        "        Path(resource).unlink(missing_ok=True)\n"
+        "else:\n"
         "    raise SystemExit(127)\n",
         encoding="utf-8",
     )
@@ -271,3 +291,161 @@ def test_success_sentinel_remains_authoritative_regardless_of_command_status(
     outcome = run_sandbox_iteration(request)
 
     assert outcome is expected
+
+
+def test_every_sbx_command_isolated_from_runner_stdin_and_api_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    contract_log = tmp_path / "sbx-contract.jsonl"
+    monkeypatch.setenv("FAKE_SBX_CONTRACT_LOG", str(contract_log))
+    monkeypatch.setenv("FAKE_SBX_PRESERVED", "still-present")
+    monkeypatch.setenv("OPENAI_API_KEY", "runner-openai-key")
+    monkeypatch.setenv("CODEX_API_KEY", "runner-codex-key")
+
+    saved_stdin = os.dup(0)
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"runner standard input")
+        os.close(write_fd)
+        os.dup2(read_fd, 0)
+        os.close(read_fd)
+        outcome = run_sandbox_iteration(request)
+    finally:
+        os.dup2(saved_stdin, 0)
+        os.close(saved_stdin)
+
+    assert outcome is SandboxIterationOutcome.ALL_PLAN_TASKS_COMPLETED
+    contracts = [
+        json.loads(line)
+        for line in contract_log.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [contract["command"] for contract in contracts] == [
+        "create",
+        "exec",
+        "rm",
+    ]
+    assert all(contract["stdin"] == "" for contract in contracts)
+    assert all(contract["openai_api_key"] is None for contract in contracts)
+    assert all(contract["codex_api_key"] is None for contract in contracts)
+    assert all(contract["preserved"] == "still-present" for contract in contracts)
+
+
+def test_custom_request_values_reach_codex_in_the_command_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    custom_request = SandboxIterationRequest(
+        target_project=request.target_project,
+        prd_role_path=Path("planning/product.md"),
+        plan_role_path=Path("delivery/work-items.md"),
+        iteration=1,
+        maximum_iterations=3,
+        model="custom-model",
+        reasoning_effort="xhigh",
+        project_log=request.project_log,
+        verbose_transcript=False,
+    )
+
+    outcome = run_sandbox_iteration(custom_request)
+
+    assert outcome is SandboxIterationOutcome.ALL_PLAN_TASKS_COMPLETED
+    calls_log = Path(os.environ["FAKE_SBX_CALLS"])
+    calls = [
+        json.loads(line)
+        for line in calls_log.read_text(encoding="utf-8").splitlines()
+    ]
+    execute = calls[1]
+    sandbox_name = calls[0][2]
+    final_message = request.target_project / (
+        f".specode_loop-last-message.1.{os.getpid()}"
+    )
+    expected_prompt = f"""You are running non-interactively inside Docker Sandbox.
+
+Project root:
+{request.target_project}
+
+Invoke the $do-work skill if it is available in this sandbox.
+If the preferred copy is unavailable, invoke $do-work from the project-local .agents/skills/specode-do-work directory.
+
+PRD document: planning/product.md
+Plan document: delivery/work-items.md
+
+The PRD document corresponds to output from the global $to-spec skill.
+The plan document corresponds to output from the global $to-tickets skill.
+For $do-work, treat each unchecked numbered ticket in a $to-tickets plan as a Phase.
+
+Read the PRD document and plan document before choosing work.
+
+Work on AFK Plan Tasks only. Do not work on HITL Plan Tasks.
+
+If no undone AFK Plan Tasks remain, output exactly:
+ALL TASKS DONE
+
+When the selected AFK Plan Task is complete and the plan document has been updated, output exactly:
+TASK DONE
+
+Blocked or incomplete work must not output a success sentinel.
+"""
+    assert execute == [
+        "exec",
+        sandbox_name,
+        "codex",
+        "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check",
+        "-C",
+        str(request.target_project),
+        "-m",
+        "custom-model",
+        "-c",
+        'model_reasoning_effort="xhigh"',
+        "-o",
+        str(final_message),
+        expected_prompt,
+    ]
+
+
+def test_standard_error_is_merged_into_streamed_standard_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_SBX_EXEC_STDERR", "Codex diagnostic from stderr")
+
+    outcome = run_sandbox_iteration(request)
+
+    assert outcome is SandboxIterationOutcome.ALL_PLAN_TASKS_COMPLETED
+    captured = capsys.readouterr()
+    assert "Codex diagnostic from stderr" in captured.out
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    "partially_created",
+    [False, True],
+)
+def test_failed_creation_skips_codex_and_removes_the_assigned_sandbox_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    partially_created: bool,
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    resource = tmp_path / "fake-sandbox-resource"
+    monkeypatch.setenv("FAKE_SBX_CREATE_STATUS", "19")
+    monkeypatch.setenv("FAKE_SBX_RESOURCE", str(resource))
+    if partially_created:
+        monkeypatch.setenv("FAKE_SBX_CREATE_RESOURCE", "1")
+
+    outcome = run_sandbox_iteration(request)
+
+    assert outcome is SandboxIterationOutcome.FAILED
+    calls_log = Path(os.environ["FAKE_SBX_CALLS"])
+    calls = [
+        json.loads(line)
+        for line in calls_log.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [call[0] for call in calls] == ["create", "rm"]
+    assert calls[1] == ["rm", "--force", calls[0][2]]
+    assert not resource.exists()
