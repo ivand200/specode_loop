@@ -8,6 +8,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 RUNNER = ROOT_DIR / "scripts" / "specode_loop.py"
 ITERATION_MODULE = ROOT_DIR / "scripts" / "specode_loop_iteration.py"
 WORKFLOW_KIT = ROOT_DIR / "sandbox-kits" / "workflow-skills"
+WORKFLOW_KIT_E2E = ROOT_DIR / "tests" / "specode_loop_workflow_kit-e2e.sh"
 WORKFLOW_SKILL = (
     WORKFLOW_KIT
     / "files"
@@ -115,3 +116,17 @@ def test_release_surface_contains_complete_workflow_kit_contract() -> None:
         "Use the `$specode-loop-implement` skill to execute this iteration."
         in iteration
     )
+
+
+def test_real_workflow_kit_e2e_covers_selection_invariance_and_cleanup() -> None:
+    harness = WORKFLOW_KIT_E2E.read_text(encoding="utf-8")
+
+    assert "SPECODE_LOOP_E2E_KIT_SKILL_SELECTED" in harness
+    assert "SPECODE_LOOP_E2E_PROJECT_DO_WORK_SELECTED" in harness
+    assert "SPECODE_LOOP_E2E_PROJECT_OVERRIDE_SELECTED" in harness
+    assert "SPECODE_LOOP_VERBOSE=1" in harness
+    assert "write_project_manifest" in harness
+    assert "sha256" in harness
+    assert "sbx ls --json" in harness
+    assert ".specode_loop-last-message.*" in harness
+    assert "Target Project changed beyond specode_loop.log" in harness

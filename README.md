@@ -214,6 +214,15 @@ unset OPENAI_API_KEY CODEX_API_KEY
 bash tests/specode_loop_python-e2e.sh
 ```
 
+Run the focused two-project Workflow Kit E2E to verify real service-skill
+discovery, deliberate project override precedence, Target Project invariance,
+and sandbox removal:
+
+```bash
+unset OPENAI_API_KEY CODEX_API_KEY
+bash tests/specode_loop_workflow_kit-e2e.sh
+```
+
 Run a focused one-request authentication E2E against the globally configured
 Docker Sandbox OpenAI credential:
 
