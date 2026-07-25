@@ -56,6 +56,15 @@ def _validate_request(request: SandboxIterationRequest) -> None:
         or not resolved_target_project.is_dir()
     ):
         raise ValueError("Target Project must be an existing resolved directory")
+    try:
+        resolved_workflow_kit = request.workflow_kit.resolve(strict=True)
+    except OSError as error:
+        raise ValueError("Workflow Kit must be an existing resolved directory") from error
+    if (
+        request.workflow_kit != resolved_workflow_kit
+        or not resolved_workflow_kit.is_dir()
+    ):
+        raise ValueError("Workflow Kit must be an existing resolved directory")
     for role, role_path in (
         ("prd", request.prd_role_path),
         ("plan", request.plan_role_path),
@@ -392,26 +401,32 @@ def run_sandbox_iteration(
             str(request.target_project),
         ]
         command_status = _stream_sandbox_command(create_command, request, transcript)
-        if command_status == 0:
-            codex_args = [
-                "exec",
-                "--dangerously-bypass-approvals-and-sandbox",
-                "--skip-git-repo-check",
-                "-C",
-                str(request.target_project),
-            ]
-            if request.model:
-                codex_args.extend(["-m", request.model])
-            if request.reasoning_effort:
-                codex_args.extend(
-                    ["-c", f'model_reasoning_effort="{request.reasoning_effort}"']
-                )
-            codex_args.extend(["-o", str(final_message), _build_prompt(request)])
-            command_status = _stream_sandbox_command(
-                ["sbx", "exec", sandbox_name, "codex", *codex_args],
+        if command_status != 0:
+            _log_line(
                 request,
-                transcript,
+                f"===== iteration {request.iteration} status: FAILED, sandbox creation / Workflow Kit application failed (command exit code: {command_status}) =====",
             )
+            return outcome
+
+        codex_args = [
+            "exec",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--skip-git-repo-check",
+            "-C",
+            str(request.target_project),
+        ]
+        if request.model:
+            codex_args.extend(["-m", request.model])
+        if request.reasoning_effort:
+            codex_args.extend(
+                ["-c", f'model_reasoning_effort="{request.reasoning_effort}"']
+            )
+        codex_args.extend(["-o", str(final_message), _build_prompt(request)])
+        command_status = _stream_sandbox_command(
+            ["sbx", "exec", sandbox_name, "codex", *codex_args],
+            request,
+            transcript,
+        )
 
         _report_final_message(request, final_message, transcript)
 

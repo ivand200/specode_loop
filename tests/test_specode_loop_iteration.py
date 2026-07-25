@@ -86,6 +86,9 @@ def _install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
         "        transcript.mkdir()\n"
         "    if os.environ.get('FAKE_SBX_REMOVE_EXECUTABLE') == '1':\n"
         "        Path(sys.argv[0]).unlink()\n"
+        "    target_edit = os.environ.get('FAKE_SBX_TARGET_EDIT')\n"
+        "    if target_edit:\n"
+        "        Path(target_edit).write_text('intentional Codex edit\\n', encoding='utf-8')\n"
         "    raise SystemExit(int(os.environ.get('FAKE_SBX_EXEC_STATUS', '0')))\n"
         "elif args[0] == 'rm':\n"
         "    process_observations = os.environ.get('FAKE_SBX_PROCESS_OBSERVATIONS')\n"
@@ -112,6 +115,8 @@ def _install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
         "    resource = os.environ.get('FAKE_SBX_RESOURCE')\n"
         "    if resource:\n"
         "        Path(resource).unlink(missing_ok=True)\n"
+        "    if os.environ.get('FAKE_SBX_RM_SIGNAL') == '1':\n"
+        "        os.kill(os.getppid(), signal.SIGUSR1)\n"
         "    raise SystemExit(int(os.environ.get('FAKE_SBX_RM_STATUS', '0')))\n"
         "else:\n"
         "    raise SystemExit(127)\n",
@@ -218,6 +223,47 @@ def test_invalid_target_project_fails_before_sandbox_execution(
 
     assert not Path(os.environ["FAKE_SBX_CALLS"]).exists()
     assert not list(tmp_path.glob("specode_loop.*"))
+
+
+@pytest.mark.parametrize("kit_kind", ["relative", "unresolved", "missing", "file"])
+def test_invalid_workflow_kit_fails_before_sandbox_identity_or_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kit_kind: str,
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    if kit_kind == "relative":
+        monkeypatch.chdir(tmp_path)
+        workflow_kit = Path("workflow-kit")
+    elif kit_kind == "unresolved":
+        workflow_kit = tmp_path / "workflow-kit-link"
+        workflow_kit.symlink_to(request.workflow_kit, target_is_directory=True)
+    elif kit_kind == "missing":
+        workflow_kit = tmp_path / "missing-workflow-kit"
+    else:
+        workflow_kit = tmp_path / "workflow-kit-file"
+        workflow_kit.write_text("not a Workflow Kit directory\n", encoding="utf-8")
+    invalid_request = SandboxIterationRequest(
+        target_project=request.target_project,
+        workflow_kit=workflow_kit,
+        prd_role_path=request.prd_role_path,
+        plan_role_path=request.plan_role_path,
+        iteration=request.iteration,
+        maximum_iterations=request.maximum_iterations,
+        model=request.model,
+        reasoning_effort=request.reasoning_effort,
+        project_log=request.project_log,
+        verbose_transcript=request.verbose_transcript,
+    )
+    original_log = request.project_log.read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Workflow Kit"):
+        run_sandbox_iteration(invalid_request)
+
+    assert request.project_log.read_text(encoding="utf-8") == original_log
+    assert not Path(os.environ["FAKE_SBX_CALLS"]).exists()
+    assert not list(tmp_path.glob("specode_loop.*"))
+    assert not list(request.target_project.glob(".specode_loop-last-message.*"))
 
 
 @pytest.mark.parametrize("role", ["prd", "plan"])
@@ -512,32 +558,26 @@ def test_all_tasks_done_takes_precedence_when_both_exact_sentinels_appear(
 
 
 @pytest.mark.parametrize(
-    ("command", "status", "sentinel", "expected"),
+    ("status", "sentinel", "expected"),
     [
-        ("exec", "42", "TASK DONE\n", SandboxIterationOutcome.PLAN_TASK_COMPLETED),
         (
-            "create",
-            "23",
-            "ALL TASKS DONE",
-            SandboxIterationOutcome.ALL_PLAN_TASKS_COMPLETED,
+            "42",
+            "TASK DONE\n",
+            SandboxIterationOutcome.PLAN_TASK_COMPLETED,
         ),
-        ("exec", "7", "still working\n", SandboxIterationOutcome.FAILED),
+        ("7", "still working\n", SandboxIterationOutcome.FAILED),
     ],
 )
-def test_success_sentinel_remains_authoritative_regardless_of_command_status(
+def test_success_sentinel_remains_authoritative_after_codex_command_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    command: str,
     status: str,
     sentinel: str,
     expected: SandboxIterationOutcome,
 ) -> None:
     request = _prepare_iteration_request(tmp_path, monkeypatch)
-    monkeypatch.setenv(f"FAKE_SBX_{command.upper()}_STATUS", status)
-    if command == "create":
-        monkeypatch.setenv("FAKE_SBX_CREATE_OUTPUT", sentinel)
-    else:
-        monkeypatch.setenv("FAKE_SBX_FINAL_MESSAGE", sentinel)
+    monkeypatch.setenv("FAKE_SBX_EXEC_STATUS", status)
+    monkeypatch.setenv("FAKE_SBX_FINAL_MESSAGE", sentinel)
 
     outcome = run_sandbox_iteration(request)
 
@@ -675,11 +715,13 @@ def test_standard_error_is_merged_into_streamed_standard_output(
 def test_failed_creation_skips_codex_and_removes_the_assigned_sandbox_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
     partially_created: bool,
 ) -> None:
     request = _prepare_iteration_request(tmp_path, monkeypatch)
     resource = tmp_path / "fake-sandbox-resource"
     monkeypatch.setenv("FAKE_SBX_CREATE_STATUS", "19")
+    monkeypatch.setenv("FAKE_SBX_CREATE_OUTPUT", "TASK DONE\nALL TASKS DONE")
     monkeypatch.setenv("FAKE_SBX_RESOURCE", str(resource))
     if partially_created:
         monkeypatch.setenv("FAKE_SBX_CREATE_RESOURCE", "1")
@@ -694,6 +736,49 @@ def test_failed_creation_skips_codex_and_removes_the_assigned_sandbox_once(
     assert [call[0] for call in calls] == ["create", "rm"]
     assert calls[1] == ["rm", "--force", calls[0][3]]
     assert not resource.exists()
+    terminal = capsys.readouterr().out
+    assert "FAILED, sandbox creation / Workflow Kit application failed" in terminal
+    assert "failed without a success sentinel" not in terminal
+
+
+def test_missing_runtime_service_skill_has_no_fallback_and_fails_without_sentinel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    monkeypatch.setenv(
+        "FAKE_SBX_EXEC_OUTPUT", "specode-loop-implement skill was not found"
+    )
+    monkeypatch.setenv("FAKE_SBX_FINAL_MESSAGE", "")
+
+    outcome = run_sandbox_iteration(request)
+
+    assert outcome is SandboxIterationOutcome.FAILED
+    calls = [
+        json.loads(line)
+        for line in Path(os.environ["FAKE_SBX_CALLS"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [call[0] for call in calls] == ["create", "exec", "rm"]
+    prompt = calls[1][-1]
+    assert prompt.count("$specode-loop-implement") == 1
+    assert "$do-work" not in prompt
+    assert "fallback" not in prompt.lower()
+
+
+def test_failed_iteration_preserves_intentional_target_project_edits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    intentional_edit = request.target_project / "codex-created.txt"
+    monkeypatch.setenv("FAKE_SBX_TARGET_EDIT", str(intentional_edit))
+    monkeypatch.setenv("FAKE_SBX_FINAL_MESSAGE", "work remains incomplete\n")
+    monkeypatch.setenv("FAKE_SBX_EXEC_STATUS", "7")
+
+    outcome = run_sandbox_iteration(request)
+
+    assert outcome is SandboxIterationOutcome.FAILED
+    assert intentional_edit.read_text(encoding="utf-8") == "intentional Codex edit\n"
 
 
 def test_concise_reporting_captures_final_message_without_raw_output_in_log(
@@ -918,6 +1003,35 @@ def test_sandbox_cleanup_start_failure_does_not_replace_classified_outcome(
     terminal = capsys.readouterr().out
     assert "Sandbox cleanup: failed to remove sandbox " in terminal
     assert "FileNotFoundError" in terminal
+
+
+def test_cleanup_control_flow_propagates_after_artifacts_and_sandbox_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _prepare_iteration_request(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_SBX_RM_SIGNAL", "1")
+
+    def interrupt_cleanup(signum: int, frame: object) -> None:
+        raise SystemExit(77)
+
+    previous_handler = signal.signal(signal.SIGUSR1, interrupt_cleanup)
+    try:
+        with pytest.raises(SystemExit) as raised:
+            run_sandbox_iteration(request)
+    finally:
+        signal.signal(signal.SIGUSR1, previous_handler)
+
+    assert raised.value.code == 77
+    assert not list(tmp_path.glob("specode_loop.*"))
+    assert not list(request.target_project.glob(".specode_loop-last-message.*"))
+    calls = [
+        json.loads(line)
+        for line in Path(os.environ["FAKE_SBX_CALLS"])
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [call[0] for call in calls] == ["create", "exec", "rm"]
 
 
 def test_later_cleanup_stages_continue_after_the_first_artifact_fails(
