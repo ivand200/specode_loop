@@ -291,6 +291,18 @@ def assert_no_temp_artifacts(tmp_path: Path, project: Path) -> None:
     assert not list(project.glob(".specode_loop-last-message.*"))
 
 
+def target_project_agent_content(project: Path) -> dict[str, bytes | None]:
+    agents = project / ".agents"
+    if not agents.exists():
+        return {}
+    return {
+        path.relative_to(agents).as_posix(): (
+            None if path.is_dir() else path.read_bytes()
+        )
+        for path in agents.rglob("*")
+    }
+
+
 def test_help_describes_python_command_contract() -> None:
     result = run_loop(None, "--help")
 
@@ -721,7 +733,7 @@ def test_max_iteration_cap_fails_without_no_sentinel_diagnostics(tmp_path: Path,
     assert_no_temp_artifacts(tmp_path, project)
 
 
-def test_successful_provisioning_leaves_target_project_agent_files_unchanged(
+def test_successful_provisioning_preserves_skills_and_accepts_same_name_override(
     tmp_path: Path, monkeypatch
 ) -> None:
     project = make_project(tmp_path)
@@ -741,22 +753,46 @@ def test_successful_provisioning_leaves_target_project_agent_files_unchanged(
     unrelated_skill.parent.mkdir(parents=True)
     unrelated_skill.write_text("project-owned skill\n", encoding="utf-8")
     unrelated_agent_config.write_text("project-owned agent config\n", encoding="utf-8")
-    before = {
-        path.relative_to(project / ".agents"): path.read_bytes()
-        for path in (project / ".agents").rglob("*")
-        if path.is_file()
-    }
+    before = target_project_agent_content(project)
 
     result = run_loop(project, path=path)
 
     assert result.returncode == 0
-    after = {
-        file.relative_to(project / ".agents"): file.read_bytes()
-        for file in (project / ".agents").rglob("*")
-        if file.is_file()
-    }
-    assert after == before
-    assert f"--kit {WORKFLOW_KIT} codex {project}" in assert_sandbox_called(calls_log)
+    assert target_project_agent_content(project) == before
+    calls = assert_sandbox_called(calls_log)
+    assert f"--kit {WORKFLOW_KIT} codex {project}" in calls
+    assert f"skill-before-exec|{project_do_work}|present" in calls
+    assert "Use the `$specode-loop-implement` skill to execute this iteration." in calls
+    assert "Use the `$do-work` skill" not in calls
+
+
+def test_failed_preflight_leaves_complete_target_project_agent_content_unchanged(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path, "preflight-ownership")
+    project_do_work = project / ".agents" / "skills" / "do-work" / "SKILL.md"
+    project_service_skill = (
+        project / ".agents" / "skills" / "specode-loop-implement" / "SKILL.md"
+    )
+    unrelated_config = project / ".agents" / "project-policy.md"
+    project_do_work.parent.mkdir(parents=True)
+    project_do_work.write_text("ordinary project do-work\n", encoding="utf-8")
+    project_service_skill.parent.mkdir(parents=True)
+    project_service_skill.write_text("deliberate project override\n", encoding="utf-8")
+    unrelated_config.write_text("project-owned policy\n", encoding="utf-8")
+    before = target_project_agent_content(project)
+    path, calls_log = install_fake_sbx(tmp_path)
+    monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
+    monkeypatch.setenv("FAKE_SBX_DIR", str(tmp_path))
+    (tmp_path / "parser.status").write_text("2\n", encoding="utf-8")
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 1
+    assert "Docker Sandbox compatibility failure: create parser check" in result.stderr
+    assert target_project_agent_content(project) == before
+    assert not (project / "specode_loop.log").exists()
+    assert_sandbox_not_called(calls_log)
 
 
 def test_canonical_workflow_kit_owns_the_complete_service_skill() -> None:

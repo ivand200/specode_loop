@@ -46,9 +46,9 @@ command that proves the final behavior through a single external seam.
 9. As a real e2e test maintainer, I want the fixture to expose a single
    verification seam, so that the test can assert finished behavior without
    depending on how Codex implemented the files.
-10. As a real e2e test maintainer, I want runner-managed workflow skill files to
-    remain untouched, so that task work does not modify Specode Loop-owned
-    configuration.
+10. As a real e2e test maintainer, I want Target Project agent configuration to
+    remain untouched, so that provisioning and task work preserve project-owned
+    skills.
 
 ## Implementation Decisions
 
@@ -63,7 +63,9 @@ command that proves the final behavior through a single external seam.
 - The transcript combines the request and response into a human-reviewable
   artifact without introducing application framework code.
 - The verification command is the external behavior seam for final checks.
-- Runner-managed bundled workflow skill files are out of scope for task work.
+- Target Project `.agents` content is project-owned and must remain unchanged.
+- Specode Loop supplies its Service Implementation Skill through its validated
+  Workflow Kit, outside the Target Project tree.
 - Git commits, package installation, and network services are not part of this
   fixture.
 
@@ -118,7 +120,8 @@ Interface: Verification command, stories 5, 9
   copied Target Project.
 - Tests should assert external behavior: completed plan checkboxes, exact
   request/response/transcript contents, executable verification output, copied
-  workflow skill presence, and Success Sentinel evidence in the project log.
+  Workflow Kit validation evidence, unchanged Target Project agent
+  configuration, and Success Sentinel evidence in the project log.
 - Tests should not inspect how sandboxed Codex chooses to create the artifacts or
   implement the verification command.
 - The fake-sandbox regression suite remains responsible for runner edge cases
@@ -131,11 +134,11 @@ Interface: Verification command, stories 5, 9
 - Git commits or pull request creation.
 - Any HITL ticket that would prevent the real e2e harness from completing the
   example automatically.
-- Modifying runner-managed workflow skill files.
+- Modifying Target Project agent configuration.
 
 ## Further Notes
 
 This fixture is intentionally small and literal. Its job is to make each
 ticket-level Sandbox Iteration observable, deterministic, and easy to verify
-while keeping the Planning Documents close to the global `$to-spec` and
-`$to-tickets` output formats used for real work.
+while keeping the Planning Documents aligned with Specode Loop's established
+PRD and plan roles.

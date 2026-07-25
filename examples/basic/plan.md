@@ -92,5 +92,4 @@ review points for the finished Target Project.
   Project root and confirm its exact success output.
 - [ ] **Most important user story for final manual QA:** one local request is
   carried across Sandbox Iterations into one deterministic, reviewable response.
-- [ ] Leave `.agents/skills/do-work` and
-  `.agents/skills/specode-do-work` unchanged.
+- [ ] Leave all pre-existing Target Project `.agents` content unchanged.
