@@ -18,8 +18,6 @@ __all__ = [
 ]
 
 _API_KEY_ENVIRONMENT_VARIABLES = ("OPENAI_API_KEY", "CODEX_API_KEY")
-_PREFERRED_WORKFLOW_SKILL = "do-work"
-_FALLBACK_WORKFLOW_SKILL = "specode-do-work"
 _TASK_DONE_SENTINEL = "TASK DONE"
 _ALL_TASKS_DONE_SENTINEL = "ALL TASKS DONE"
 _FAILURE_EXCERPT_LINES = 30
@@ -29,6 +27,7 @@ _ALLOWED_REASONING_EFFORTS = {"", "minimal", "low", "medium", "high", "xhigh"}
 @_dataclass(frozen=True)
 class SandboxIterationRequest:
     target_project: _Path
+    workflow_kit: _Path
     prd_role_path: _Path
     plan_role_path: _Path
     iteration: int
@@ -117,8 +116,7 @@ def _build_prompt(request: SandboxIterationRequest) -> str:
 Project root:
 {request.target_project}
 
-Invoke the ${_PREFERRED_WORKFLOW_SKILL} skill if it is available in this sandbox.
-If the preferred copy is unavailable, invoke ${_PREFERRED_WORKFLOW_SKILL} from the project-local .agents/skills/{_FALLBACK_WORKFLOW_SKILL} directory.
+Use the `$specode-loop-implement` skill to execute this iteration.
 
 PRD document: {request.prd_role_path}
 Plan document: {request.plan_role_path}
@@ -385,8 +383,11 @@ def run_sandbox_iteration(
         create_command = [
             "sbx",
             "create",
+            "--no-share-skills",
             "--name",
             sandbox_name,
+            "--kit",
+            str(request.workflow_kit),
             "codex",
             str(request.target_project),
         ]

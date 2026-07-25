@@ -1,12 +1,12 @@
 ---
-name: do-work
-description: "Execute a unit of work end-to-end: plan, implement, validate with typecheck and tests. Use when user wants to do work, build a feature, fix a bug, or implement a phase from a plan."
+name: specode-loop-implement
+description: "Execute one Specode Loop Plan Task end-to-end: plan, implement, validate with typecheck and tests. Use for a Specode Loop Sandbox Iteration."
 ---
 
-# Do Work
+# Specode Loop Implement
 
-Execute a **ONE** complete unit of work: plan it, build it, validate it, commit it.
-Take first updone Phase and implement it.
+Execute **ONE** complete unit of work: plan it, build it, validate it, commit it.
+Take the first undone Phase and implement it.
 
 ## Workflow
 
@@ -33,4 +33,4 @@ Run the feedback loops and fix any issues. Repeat until all pass cleanly.
 
 Run typecheckers, linters and tests.
 
-Mark task/phase, acceptance criteria as complete when all tests pass.
+Mark task/phase and acceptance criteria as complete when all tests pass.

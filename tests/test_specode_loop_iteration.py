@@ -130,12 +130,15 @@ def _prepare_iteration_request(
     (project / "plan.md").write_text("# Plan\n", encoding="utf-8")
     log_file = project / "specode_loop.log"
     log_file.write_text("", encoding="utf-8")
+    workflow_kit = tmp_path / "workflow-kit"
+    workflow_kit.mkdir()
     path, calls_log = _install_fake_sbx(tmp_path)
     monkeypatch.setenv("PATH", path)
     monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     return SandboxIterationRequest(
         target_project=project.resolve(),
+        workflow_kit=workflow_kit.resolve(),
         prd_role_path=Path("prd.md"),
         plan_role_path=Path("plan.md"),
         iteration=1,
@@ -164,6 +167,7 @@ def test_invalid_iteration_position_fails_before_sandbox_execution(
     request = _prepare_iteration_request(tmp_path, monkeypatch)
     invalid_request = SandboxIterationRequest(
         target_project=request.target_project,
+        workflow_kit=request.workflow_kit,
         prd_role_path=request.prd_role_path,
         plan_role_path=request.plan_role_path,
         iteration=iteration,
@@ -198,6 +202,7 @@ def test_invalid_target_project_fails_before_sandbox_execution(
         target_project.write_text("not a Target Project\n", encoding="utf-8")
     invalid_request = SandboxIterationRequest(
         target_project=target_project,
+        workflow_kit=request.workflow_kit,
         prd_role_path=request.prd_role_path,
         plan_role_path=request.plan_role_path,
         iteration=request.iteration,
@@ -237,6 +242,7 @@ def test_escaping_planning_document_role_path_fails_before_sandbox_execution(
         invalid_role_path = Path("escape-link") / f"{role}.md"
     invalid_request = SandboxIterationRequest(
         target_project=request.target_project,
+        workflow_kit=request.workflow_kit,
         prd_role_path=(
             invalid_role_path if role == "prd" else request.prd_role_path
         ),
@@ -296,6 +302,7 @@ def test_invalid_execution_choice_fails_before_sandbox_execution(
     request = _prepare_iteration_request(tmp_path, monkeypatch)
     invalid_request = SandboxIterationRequest(
         target_project=request.target_project,
+        workflow_kit=request.workflow_kit,
         prd_role_path=request.prd_role_path,
         plan_role_path=request.plan_role_path,
         iteration=request.iteration,
@@ -322,6 +329,8 @@ def test_one_complete_iteration_reports_all_tasks_done_and_releases_resources(
     (project / "plan.md").write_text("# Plan\n", encoding="utf-8")
     log_file = project / "specode_loop.log"
     log_file.write_text("", encoding="utf-8")
+    workflow_kit = tmp_path / "workflow-kit"
+    workflow_kit.mkdir()
     path, calls_log = _install_fake_sbx(tmp_path)
     monkeypatch.setenv("PATH", path)
     monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
@@ -329,6 +338,7 @@ def test_one_complete_iteration_reports_all_tasks_done_and_releases_resources(
 
     request = SandboxIterationRequest(
         target_project=project.resolve(),
+        workflow_kit=workflow_kit.resolve(),
         prd_role_path=Path("prd.md"),
         plan_role_path=Path("plan.md"),
         iteration=1,
@@ -352,8 +362,17 @@ def test_one_complete_iteration_reports_all_tasks_done_and_releases_resources(
     ]
     assert len(calls) == 3
     create, execute, remove = calls
-    sandbox_name = create[2]
-    assert create == ["create", "--name", sandbox_name, "codex", str(project)]
+    sandbox_name = create[3]
+    assert create == [
+        "create",
+        "--no-share-skills",
+        "--name",
+        sandbox_name,
+        "--kit",
+        str(workflow_kit),
+        "codex",
+        str(project),
+    ]
     assert len(sandbox_name) <= 63
     assert re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?", sandbox_name)
     assert execute[:4] == ["exec", sandbox_name, "codex", "exec"]
@@ -371,7 +390,13 @@ def test_one_complete_iteration_reports_all_tasks_done_and_releases_resources(
         "-o",
     ]
     prompt = execute[-1]
-    assert "Invoke the $do-work skill if it is available in this sandbox." in prompt
+    workflow_instruction = (
+        "Use the `$specode-loop-implement` skill to execute this iteration."
+    )
+    assert prompt.count(workflow_instruction) == 1
+    assert prompt.index(str(project)) < prompt.index(workflow_instruction)
+    assert prompt.index(workflow_instruction) < prompt.index("PRD document: prd.md")
+    assert "$do-work" not in prompt
     assert "PRD document: prd.md" in prompt
     assert "Plan document: plan.md" in prompt
     assert (
@@ -391,6 +416,8 @@ def test_exact_task_done_reports_one_plan_task_completed(
     (project / "plan.md").write_text("# Plan\n", encoding="utf-8")
     log_file = project / "specode_loop.log"
     log_file.write_text("", encoding="utf-8")
+    workflow_kit = tmp_path / "workflow-kit"
+    workflow_kit.mkdir()
     path, calls_log = _install_fake_sbx(tmp_path)
     monkeypatch.setenv("PATH", path)
     monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
@@ -400,6 +427,7 @@ def test_exact_task_done_reports_one_plan_task_completed(
     outcome = run_sandbox_iteration(
         SandboxIterationRequest(
             target_project=project.resolve(),
+            workflow_kit=workflow_kit.resolve(),
             prd_role_path=Path("prd.md"),
             plan_role_path=Path("plan.md"),
             iteration=1,
@@ -560,6 +588,7 @@ def test_custom_request_values_reach_codex_in_the_command_contract(
     request = _prepare_iteration_request(tmp_path, monkeypatch)
     custom_request = SandboxIterationRequest(
         target_project=request.target_project,
+        workflow_kit=request.workflow_kit,
         prd_role_path=Path("planning/product.md"),
         plan_role_path=Path("delivery/work-items.md"),
         iteration=1,
@@ -578,7 +607,7 @@ def test_custom_request_values_reach_codex_in_the_command_contract(
         json.loads(line) for line in calls_log.read_text(encoding="utf-8").splitlines()
     ]
     execute = calls[1]
-    sandbox_name = calls[0][2]
+    sandbox_name = calls[0][3]
     final_message = request.target_project / (
         f".specode_loop-last-message.1.{os.getpid()}"
     )
@@ -587,15 +616,10 @@ def test_custom_request_values_reach_codex_in_the_command_contract(
 Project root:
 {request.target_project}
 
-Invoke the $do-work skill if it is available in this sandbox.
-If the preferred copy is unavailable, invoke $do-work from the project-local .agents/skills/specode-do-work directory.
+Use the `$specode-loop-implement` skill to execute this iteration.
 
 PRD document: planning/product.md
 Plan document: delivery/work-items.md
-
-The PRD document corresponds to output from the global $to-spec skill.
-The plan document corresponds to output from the global $to-tickets skill.
-For $do-work, treat each unchecked numbered ticket in a $to-tickets plan as a Phase.
 
 Read the PRD document and plan document before choosing work.
 
@@ -668,7 +692,7 @@ def test_failed_creation_skips_codex_and_removes_the_assigned_sandbox_once(
         json.loads(line) for line in calls_log.read_text(encoding="utf-8").splitlines()
     ]
     assert [call[0] for call in calls] == ["create", "rm"]
-    assert calls[1] == ["rm", "--force", calls[0][2]]
+    assert calls[1] == ["rm", "--force", calls[0][3]]
     assert not resource.exists()
 
 
@@ -706,6 +730,7 @@ def test_verbose_reporting_includes_raw_transcript_and_final_message(
     request = _prepare_iteration_request(tmp_path, monkeypatch)
     request = SandboxIterationRequest(
         target_project=request.target_project,
+        workflow_kit=request.workflow_kit,
         prd_role_path=request.prd_role_path,
         plan_role_path=request.plan_role_path,
         iteration=request.iteration,

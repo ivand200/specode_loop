@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -21,11 +22,20 @@ ALLOWED_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
 DEFAULT_AUTH_MODE = "oauth"
 ALLOWED_AUTH_MODES = {"oauth", "api-key"}
 API_KEY_ENVIRONMENT_VARIABLES = ("OPENAI_API_KEY", "CODEX_API_KEY")
-RUNNER_SKILLS_REL = Path(".agents") / "skills"
-HOST_SKILLS_REL = Path("skills")
-PREFERRED_WORKFLOW_SKILL = "do-work"
-FALLBACK_WORKFLOW_SKILL = "specode-do-work"
-SPECODE_REQUIRED_SKILLS = (FALLBACK_WORKFLOW_SKILL,)
+WORKFLOW_KIT_REL = Path("sandbox-kits") / "workflow-skills"
+WORKFLOW_SKILL_REL = (
+    Path("files")
+    / "home"
+    / ".agents"
+    / "skills"
+    / "specode-loop-implement"
+)
+WORKFLOW_KIT_ANCHORS = (
+    Path("spec.yaml"),
+    WORKFLOW_SKILL_REL / "SKILL.md",
+    WORKFLOW_SKILL_REL / "agents" / "openai.yaml",
+)
+MINIMUM_SBX_VERSION = (0, 37, 0)
 DEFAULT_PRD_DOCUMENT = Path("prd.md")
 DEFAULT_PLAN_DOCUMENT = Path("plan.md")
 ALL_TASKS_DONE_SENTINEL = "ALL TASKS DONE"
@@ -280,55 +290,63 @@ def runner_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def host_codex_home() -> Path:
-    configured_home = os.environ.get("CODEX_HOME")
-    return (
-        Path(configured_home).expanduser()
-        if configured_home
-        else Path.home() / ".codex"
+def run_sbx_preflight_command(
+    sbx: str, *args: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sbx, *args],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+        env=sbx_environment(),
     )
 
 
-def copy_skill_directory(source_dir: Path, target_dir: Path) -> None:
-    if source_dir.resolve() != target_dir.resolve():
-        target_dir.parent.mkdir(parents=True, exist_ok=True)
-        if target_dir.exists():
-            if target_dir.is_dir() and not target_dir.is_symlink():
-                shutil.rmtree(target_dir)
-            else:
-                target_dir.unlink()
-        shutil.copytree(source_dir, target_dir)
+def validate_workflow_kit() -> Path:
+    configured_kit = runner_root() / WORKFLOW_KIT_REL
+    try:
+        workflow_kit = configured_kit.resolve(strict=True)
+    except OSError:
+        fail(f"invalid Workflow Kit: required directory is missing: {configured_kit}")
+    if not workflow_kit.is_dir():
+        fail(f"invalid Workflow Kit: required directory is missing: {configured_kit}")
 
+    for anchor in WORKFLOW_KIT_ANCHORS:
+        if not (workflow_kit / anchor).is_file():
+            fail(f"invalid Workflow Kit: required file is missing: {workflow_kit / anchor}")
 
-def sync_preferred_global_skill(project_abs: Path) -> str | None:
-    source_dir = host_codex_home() / HOST_SKILLS_REL / PREFERRED_WORKFLOW_SKILL
-    if not source_dir.is_dir():
-        return None
+    sbx = shutil.which("sbx")
+    if sbx is None:
+        fail("Docker Sandbox CLI 'sbx' is not installed or not on PATH")
 
-    target_dir = project_abs / RUNNER_SKILLS_REL / PREFERRED_WORKFLOW_SKILL
-    copy_skill_directory(source_dir, target_dir)
-    return f"{PREFERRED_WORKFLOW_SKILL}:{target_dir} (source: {source_dir})"
+    version_result = run_sbx_preflight_command(sbx, "version")
+    version_match = re.search(
+        r"(?<![0-9])v?([0-9]+)\.([0-9]+)\.([0-9]+)(?![0-9])",
+        version_result.stdout,
+    )
+    if version_result.returncode != 0 or version_match is None:
+        fail("Docker Sandbox version check failed; upgrade Docker Sandbox and retry")
+    version = tuple(int(part) for part in version_match.groups())
+    if version < MINIMUM_SBX_VERSION:
+        fail("Docker Sandbox 0.37.0 or newer is required; upgrade and retry")
 
+    parser_result = run_sbx_preflight_command(
+        sbx, "create", "--no-share-skills", "--help"
+    )
+    if parser_result.returncode != 0:
+        fail(
+            "Docker Sandbox create parser does not accept --no-share-skills; "
+            "upgrade Docker Sandbox and retry"
+        )
 
-def sync_required_bundled_skills(
-    project_abs: Path, root: Path | None = None
-) -> list[str]:
-    root = runner_root() if root is None else root
-    source_root = root / RUNNER_SKILLS_REL
-    target_root = project_abs / RUNNER_SKILLS_REL
-    synced_skills: list[str] = []
-
-    for skill_name in SPECODE_REQUIRED_SKILLS:
-        source_dir = source_root / skill_name
-        target_dir = target_root / skill_name
-
-        if not source_dir.is_dir():
-            fail(f"bundled workflow skill directory is missing: {source_dir}")
-
-        copy_skill_directory(source_dir, target_dir)
-        synced_skills.append(f"{skill_name}:{target_dir}")
-
-    return synced_skills
+    validator_result = run_sbx_preflight_command(
+        sbx, "kit", "validate", str(workflow_kit)
+    )
+    if validator_result.returncode != 0:
+        fail(f"invalid Workflow Kit: Docker validation failed: {workflow_kit}")
+    return workflow_kit
 
 
 def git_command(
@@ -373,31 +391,24 @@ def warn_for_existing_git_state(project_abs: Path) -> None:
 
 def preflight(
     options: Options,
-) -> tuple[Path, PlanningDocuments, str | None, list[str]]:
+) -> tuple[Path, PlanningDocuments, Path]:
     validate_positive_integer("--max-iterations", options.max_iterations)
     validate_reasoning_effort(options.reasoning_effort)
     validate_auth_mode(options.auth_mode)
 
-    if shutil.which("sbx") is None:
-        fail("Docker Sandbox CLI 'sbx' is not installed or not on PATH")
-
     project_abs = resolve_project_dir(options.project_dir)
     planning_documents = resolve_planning_documents(project_abs, options)
+    workflow_kit = validate_workflow_kit()
     validate_configured_auth_mode(options.auth_mode)
 
     warn_for_existing_git_state(project_abs)
-    preferred_synced_skill = sync_preferred_global_skill(project_abs)
-    synced_skills = sync_required_bundled_skills(project_abs)
 
     print("Specode Loop preflight passed.")
     print(f"Project: {project_abs}")
     print("Workspace mode: direct (sandbox edits apply to this working tree)")
     print(f"PRD document: {planning_documents.prd_abs}")
     print(f"Plan document: {planning_documents.plan_abs}")
-    if preferred_synced_skill is not None:
-        print(f"Global workflow skill synced: {preferred_synced_skill}")
-    for synced_skill in synced_skills:
-        print(f"Bundled workflow skill synced: {synced_skill}")
+    print(f"Workflow kit validated: {workflow_kit}")
     print(f"Max iterations: {options.max_iterations}")
     if options.auth_mode == "oauth":
         print("Authentication: OAuth")
@@ -411,7 +422,7 @@ def preflight(
         print(f"Reasoning effort: {options.reasoning_effort}")
     else:
         print("Reasoning effort: Codex/project default")
-    return project_abs, planning_documents, preferred_synced_skill, synced_skills
+    return project_abs, planning_documents, workflow_kit
 
 
 def write_preflight_log(
@@ -419,8 +430,7 @@ def write_preflight_log(
     project_abs: Path,
     planning_documents: PlanningDocuments,
     options: Options,
-    preferred_synced_skill: str | None,
-    synced_skills: list[str],
+    workflow_kit: Path,
 ) -> None:
     log_line(state, "Specode Loop preflight passed.", terminal=False)
     log_line(state, f"Project: {project_abs}", terminal=False)
@@ -431,16 +441,7 @@ def write_preflight_log(
     )
     log_line(state, f"PRD document: {planning_documents.prd_abs}", terminal=False)
     log_line(state, f"Plan document: {planning_documents.plan_abs}", terminal=False)
-    if preferred_synced_skill is not None:
-        log_line(
-            state,
-            f"Global workflow skill synced: {preferred_synced_skill}",
-            terminal=False,
-        )
-    for synced_skill in synced_skills:
-        log_line(
-            state, f"Bundled workflow skill synced: {synced_skill}", terminal=False
-        )
+    log_line(state, f"Workflow kit validated: {workflow_kit}", terminal=False)
     log_line(
         state,
         f"Verbose transcript logging: {os.environ.get('SPECODE_LOOP_VERBOSE', '0')}",
@@ -475,6 +476,7 @@ def run_loop(
     planning_documents: PlanningDocuments,
     options: Options,
     state: LoopState,
+    workflow_kit: Path,
 ) -> int:
     assert state.log_file is not None
     maximum_iterations = int(options.max_iterations)
@@ -482,6 +484,7 @@ def run_loop(
         outcome = run_sandbox_iteration(
             SandboxIterationRequest(
                 target_project=project_abs,
+                workflow_kit=workflow_kit,
                 prd_role_path=planning_documents.prd_role_path,
                 plan_role_path=planning_documents.plan_role_path,
                 iteration=iteration,
@@ -516,19 +519,16 @@ def main(argv: list[str] | None = None) -> int:
     options = parse_args(sys.argv[1:] if argv is None else argv)
     state = LoopState()
     install_interrupt_handlers()
-    project_abs, planning_documents, preferred_synced_skill, synced_skills = preflight(
-        options
-    )
+    project_abs, planning_documents, workflow_kit = preflight(options)
     state.log_file = project_abs / "specode_loop.log"
     write_preflight_log(
         state,
         project_abs,
         planning_documents,
         options,
-        preferred_synced_skill,
-        synced_skills,
+        workflow_kit,
     )
-    return run_loop(project_abs, planning_documents, options, state)
+    return run_loop(project_abs, planning_documents, options, state, workflow_kit)
 
 
 if __name__ == "__main__":
