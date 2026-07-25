@@ -47,9 +47,7 @@ class SandboxIterationOutcome(_Enum):
 
 def _validate_request(request: SandboxIterationRequest) -> None:
     if not 1 <= request.iteration <= request.maximum_iterations:
-        raise ValueError(
-            "iteration must be between 1 and maximum_iterations inclusive"
-        )
+        raise ValueError("iteration must be between 1 and maximum_iterations inclusive")
     try:
         resolved_target_project = request.target_project.resolve(strict=True)
     except OSError as error:
@@ -124,10 +122,6 @@ If the preferred copy is unavailable, invoke ${_PREFERRED_WORKFLOW_SKILL} from t
 
 PRD document: {request.prd_role_path}
 Plan document: {request.plan_role_path}
-
-The PRD document corresponds to output from the global $to-spec skill.
-The plan document corresponds to output from the global $to-tickets skill.
-For $do-work, treat each unchecked numbered ticket in a $to-tickets plan as a Phase.
 
 Read the PRD document and plan document before choosing work.
 

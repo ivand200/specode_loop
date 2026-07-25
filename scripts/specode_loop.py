@@ -14,7 +14,7 @@ from specode_loop_iteration import (
     run_sandbox_iteration,
 )
 
-MAX_ITERATIONS_DEFAULT = "10"
+MAX_ITERATIONS_DEFAULT = "12"
 DEFAULT_MODEL = "gpt-5.6-sol"
 DEFAULT_REASONING_EFFORT = "medium"
 ALLOWED_REASONING_EFFORTS = {"minimal", "low", "medium", "high", "xhigh"}
@@ -66,7 +66,7 @@ Arguments:
 Options:
   --prd PATH               PRD document path (default: prd.md)
   --plan PATH              Plan document path (default: plan.md)
-  --max-iterations N       Maximum sandbox iterations to run (default: 10)
+  --max-iterations N       Maximum sandbox iterations to run (default: 12)
   --auth MODE              OpenAI authentication: oauth, api-key (default: oauth)
   --model MODEL            Model for the sandboxed Codex run (default: gpt-5.6-sol)
   --effort EFFORT          Reasoning effort: minimal, low, medium, high, xhigh (default: medium)

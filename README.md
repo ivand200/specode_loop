@@ -55,6 +55,58 @@ uv run python scripts/specode_loop.py "$DEMO_PROJECT" --auth api-key
 Docker Sandbox stores either OAuth or an API key for the global `openai`
 service; changing the stored credential affects newly created sandboxes.
 
+### Sandbox templates
+
+Docker Sandbox caches agent templates across sandbox creation and removal. List
+the cached templates before troubleshooting an outdated Codex CLI or model
+metadata warning:
+
+```bash
+sbx template ls
+```
+
+To refresh the Codex template, remove only its cached image by the ID shown in
+that output:
+
+```bash
+sbx template rm IMAGE_ID
+```
+
+The next Specode Loop run pulls the current `codex-docker` template. Avoid
+`sbx reset` for routine template refreshes because it removes all sandbox data,
+not just the selected cached template.
+
+### Sandbox network policy
+
+Docker Sandbox applies persistent host-side network policy to its sandboxes. A
+new non-interactive installation can start with the recommended balanced
+preset:
+
+```bash
+sbx policy init balanced
+```
+
+Inspect active rules, test a destination, and review blocked requests with:
+
+```bash
+sbx policy ls --wide
+sbx policy check network api.openai.com
+sbx policy log
+```
+
+Add a global allow rule for a required domain, or deliberately allow every
+supported outbound HTTP/HTTPS destination:
+
+```bash
+sbx policy allow network api.example.com
+sbx policy allow network "**"
+```
+
+Use `--sandbox NAME` to scope an allow rule to one existing named sandbox.
+Organization-managed governance overrides local rules. Even an `"**"` rule
+does not expose the host network, localhost, private IP ranges, or raw
+TCP/UDP/ICMP traffic.
+
 ## Quick Start
 
 Run the bundled example in a disposable directory:
