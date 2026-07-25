@@ -6,7 +6,7 @@ description: "Execute one Specode Loop Plan Task end-to-end: plan, implement, va
 # Specode Loop Implement
 
 Execute **ONE** complete unit of work: plan it, build it, validate it, commit it.
-Take the first undone Phase and implement it.
+Take the first eligible undone AFK Plan Task and implement it.
 
 ## Workflow
 
@@ -33,4 +33,4 @@ Run the feedback loops and fix any issues. Repeat until all pass cleanly.
 
 Run typecheckers, linters and tests.
 
-Mark task/phase and acceptance criteria as complete when all tests pass.
+Mark only that Plan Task and its acceptance criteria complete when all tests pass.

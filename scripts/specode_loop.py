@@ -186,16 +186,30 @@ def sbx_environment() -> dict[str, str]:
     return environment
 
 
+def resolve_sbx_cli() -> str:
+    sbx = shutil.which("sbx")
+    if sbx is None:
+        fail_sbx_compatibility(
+            "CLI discovery failed because Docker Sandbox CLI 'sbx' is not "
+            "installed or not on PATH"
+        )
+    return sbx
+
+
 def detect_global_openai_auth_mode() -> str:
-    result = subprocess.run(
-        ["sbx", "secret", "ls", "-g", "--service", "openai"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-        env=sbx_environment(),
-    )
+    sbx = resolve_sbx_cli()
+    try:
+        result = subprocess.run(
+            [sbx, "secret", "ls", "-g", "--service", "openai"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            env=sbx_environment(),
+        )
+    except OSError:
+        fail_sbx_compatibility("OpenAI credential inspection could not be launched")
     if result.returncode != 0:
         detail = result.stderr.strip()
         suffix = f": {detail}" if detail else ""
@@ -359,11 +373,7 @@ def validate_workflow_kit() -> Path:
                 workflow_kit, f"required file is missing: {anchor_path}"
             )
 
-    sbx = shutil.which("sbx")
-    if sbx is None:
-        fail_sbx_compatibility(
-            "CLI discovery failed because Docker Sandbox CLI 'sbx' is not installed or not on PATH"
-        )
+    sbx = resolve_sbx_cli()
 
     try:
         version_result = run_sbx_preflight_command(sbx, "version")
@@ -458,8 +468,8 @@ def preflight(
 
     project_abs = resolve_project_dir(options.project_dir)
     planning_documents = resolve_planning_documents(project_abs, options)
-    workflow_kit = validate_workflow_kit()
     validate_configured_auth_mode(options.auth_mode)
+    workflow_kit = validate_workflow_kit()
 
     warn_for_existing_git_state(project_abs)
 

@@ -534,6 +534,12 @@ def test_oauth_is_default_and_rejects_stored_api_key_before_sandbox_execution(
     assert "--auth api-key" in result.stderr
     assert_bundled_skill_not_synced(project)
     assert_sandbox_not_called(calls_log)
+    workflow_kit_probes = (
+        calls_log.read_text(encoding="utf-8").splitlines()
+        if calls_log.exists()
+        else []
+    )
+    assert workflow_kit_probes == []
 
 
 def test_api_key_auth_requires_explicit_opt_in(tmp_path: Path, monkeypatch) -> None:

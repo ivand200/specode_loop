@@ -106,6 +106,12 @@ def test_release_surface_contains_complete_workflow_kit_contract() -> None:
         "name: specode-loop-workflow-skills\n"
     )
     assert "name: specode-loop-implement" in skill
+    assert "Take the first eligible undone AFK Plan Task and implement it." in skill
+    assert (
+        "Mark only that Plan Task and its acceptance criteria complete when all "
+        "tests pass."
+        in skill
+    )
     assert policy == "policy:\n  allow_implicit_invocation: true\n"
     assert "Workflow kit validated: {workflow_kit}" in runner
     assert "workflow_kit=workflow_kit" in runner
