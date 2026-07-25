@@ -8,6 +8,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 from specode_loop_iteration import (
     SandboxIterationOutcome,
@@ -36,6 +37,7 @@ WORKFLOW_KIT_ANCHORS = (
     WORKFLOW_SKILL_REL / "agents" / "openai.yaml",
 )
 MINIMUM_SBX_VERSION = (0, 37, 0)
+MAX_VALIDATOR_DIAGNOSTIC_CHARS = 800
 DEFAULT_PRD_DOCUMENT = Path("prd.md")
 DEFAULT_PLAN_DOCUMENT = Path("plan.md")
 ALL_TASKS_DONE_SENTINEL = "ALL TASKS DONE"
@@ -86,7 +88,7 @@ Options:
 """
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     print(f"Error: {message}", file=sys.stderr)
     raise SystemExit(1)
 
@@ -304,48 +306,106 @@ def run_sbx_preflight_command(
     )
 
 
+def semantic_version_text(version: tuple[int, int, int] | None) -> str:
+    if version is None:
+        return "unavailable"
+    return ".".join(str(part) for part in version)
+
+
+def fail_sbx_compatibility(
+    check: str, observed_version: tuple[int, int, int] | None = None
+) -> None:
+    minimum = semantic_version_text(MINIMUM_SBX_VERSION)
+    fail(
+        f"Docker Sandbox compatibility failure: {check}; "
+        f"observed version {semantic_version_text(observed_version)}; "
+        f"minimum version {minimum}; upgrade Docker Sandbox and retry"
+    )
+
+
+def fail_invalid_workflow_kit(workflow_kit: Path, problem: str) -> None:
+    fail(
+        f"invalid Workflow Kit: {problem}: {workflow_kit}; "
+        "the checked-in Specode Loop Workflow Kit is damaged or incompatible; "
+        "restore or reinstall the checked-in kit and retry"
+    )
+
+
+def bounded_validator_diagnostic(result: subprocess.CompletedProcess[str]) -> str:
+    diagnostic = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+    diagnostic = re.sub(r"\s+", " ", diagnostic)
+    if len(diagnostic) > MAX_VALIDATOR_DIAGNOSTIC_CHARS:
+        return f"{diagnostic[:MAX_VALIDATOR_DIAGNOSTIC_CHARS]}..."
+    return diagnostic
+
+
 def validate_workflow_kit() -> Path:
     configured_kit = runner_root() / WORKFLOW_KIT_REL
     try:
         workflow_kit = configured_kit.resolve(strict=True)
     except OSError:
-        fail(f"invalid Workflow Kit: required directory is missing: {configured_kit}")
+        fail_invalid_workflow_kit(
+            configured_kit, "required directory is missing"
+        )
     if not workflow_kit.is_dir():
-        fail(f"invalid Workflow Kit: required directory is missing: {configured_kit}")
+        fail_invalid_workflow_kit(
+            configured_kit, "required directory is missing"
+        )
 
     for anchor in WORKFLOW_KIT_ANCHORS:
-        if not (workflow_kit / anchor).is_file():
-            fail(f"invalid Workflow Kit: required file is missing: {workflow_kit / anchor}")
+        anchor_path = workflow_kit / anchor
+        if not anchor_path.is_file():
+            fail_invalid_workflow_kit(
+                workflow_kit, f"required file is missing: {anchor_path}"
+            )
 
     sbx = shutil.which("sbx")
     if sbx is None:
-        fail("Docker Sandbox CLI 'sbx' is not installed or not on PATH")
+        fail_sbx_compatibility(
+            "CLI discovery failed because Docker Sandbox CLI 'sbx' is not installed or not on PATH"
+        )
 
-    version_result = run_sbx_preflight_command(sbx, "version")
+    try:
+        version_result = run_sbx_preflight_command(sbx, "version")
+    except OSError:
+        fail_sbx_compatibility("version check could not be launched")
     version_match = re.search(
         r"(?<![0-9])v?([0-9]+)\.([0-9]+)\.([0-9]+)(?![0-9])",
         version_result.stdout,
     )
-    if version_result.returncode != 0 or version_match is None:
-        fail("Docker Sandbox version check failed; upgrade Docker Sandbox and retry")
-    version = tuple(int(part) for part in version_match.groups())
+    version: tuple[int, int, int] | None = None
+    if version_match is not None:
+        major, minor, patch = version_match.groups()
+        version = (int(major), int(minor), int(patch))
+    if version_result.returncode != 0:
+        fail_sbx_compatibility("version check exited unsuccessfully", version)
+    if version is None:
+        fail_sbx_compatibility("version check returned no semantic version")
     if version < MINIMUM_SBX_VERSION:
-        fail("Docker Sandbox 0.37.0 or newer is required; upgrade and retry")
+        fail_sbx_compatibility("version check found an unsupported version", version)
 
-    parser_result = run_sbx_preflight_command(
-        sbx, "create", "--no-share-skills", "--help"
-    )
+    try:
+        parser_result = run_sbx_preflight_command(
+            sbx, "create", "--no-share-skills", "--help"
+        )
+    except OSError:
+        fail_sbx_compatibility("create parser check could not be launched", version)
     if parser_result.returncode != 0:
-        fail(
-            "Docker Sandbox create parser does not accept --no-share-skills; "
-            "upgrade Docker Sandbox and retry"
+        fail_sbx_compatibility(
+            "create parser check rejected --no-share-skills", version
         )
 
-    validator_result = run_sbx_preflight_command(
-        sbx, "kit", "validate", str(workflow_kit)
-    )
+    try:
+        validator_result = run_sbx_preflight_command(
+            sbx, "kit", "validate", str(workflow_kit)
+        )
+    except OSError:
+        fail_sbx_compatibility("kit validator launch failed", version)
     if validator_result.returncode != 0:
-        fail(f"invalid Workflow Kit: Docker validation failed: {workflow_kit}")
+        diagnostic = bounded_validator_diagnostic(validator_result)
+        fail_invalid_workflow_kit(
+            workflow_kit, f"Docker validation failed ({diagnostic})"
+        )
     return workflow_kit
 
 

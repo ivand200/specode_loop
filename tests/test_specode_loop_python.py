@@ -68,6 +68,39 @@ def make_project(tmp_path: Path, name: str = "project") -> Path:
     return project
 
 
+def make_isolated_runner(tmp_path: Path) -> tuple[Path, Path]:
+    isolated_root = tmp_path / "isolated-runner"
+    scripts = isolated_root / "scripts"
+    scripts.mkdir(parents=True)
+    runner = scripts / "specode_loop.py"
+    shutil.copyfile(RUNNER, runner)
+    shutil.copyfile(ITERATION_MODULE, scripts / "specode_loop_iteration.py")
+
+    kit = isolated_root / "sandbox-kits" / "workflow-skills"
+    skill = (
+        kit
+        / "files"
+        / "home"
+        / ".agents"
+        / "skills"
+        / "specode-loop-implement"
+    )
+    (skill / "agents").mkdir(parents=True)
+    (kit / "spec.yaml").write_text(
+        'schemaVersion: "1"\nkind: mixin\nname: specode-loop-workflow-skills\n',
+        encoding="utf-8",
+    )
+    (skill / "SKILL.md").write_text(
+        "---\nname: specode-loop-implement\ndescription: test\n---\n",
+        encoding="utf-8",
+    )
+    (skill / "agents" / "openai.yaml").write_text(
+        "policy:\n  allow_implicit_invocation: true\n",
+        encoding="utf-8",
+    )
+    return runner, kit
+
+
 def make_global_do_work_skill(tmp_path: Path) -> Path:
     codex_home = tmp_path / "codex-home"
     skill_dir = codex_home / "skills" / "do-work"
@@ -101,13 +134,18 @@ def install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
         "case \"$cmd\" in\n"
         "  version)\n"
         "    printf 'version|%s\\n' \"$*\" >>\"$FAKE_SBX_CALLS\"\n"
-        "    printf 'v0.37.0 (test build)\\n'\n"
+        "    if [[ -f \"$FAKE_SBX_DIR/version.stdout\" ]]; then cat \"$FAKE_SBX_DIR/version.stdout\"; else printf 'v0.37.0 (test build)\\n'; fi\n"
+        "    if [[ -f \"$FAKE_SBX_DIR/version.stderr\" ]]; then cat \"$FAKE_SBX_DIR/version.stderr\" >&2; fi\n"
+        "    if [[ -f \"$FAKE_SBX_DIR/version.remove-sbx\" ]]; then rm -- \"$0\"; fi\n"
+        "    if [[ -f \"$FAKE_SBX_DIR/version.status\" ]]; then exit \"$(cat \"$FAKE_SBX_DIR/version.status\")\"; fi\n"
         "    exit 0\n"
         "    ;;\n"
         "  kit)\n"
         "    printf 'kit|%s\\n' \"$*\" >>\"$FAKE_SBX_CALLS\"\n"
         "    if [[ \"${1:-}\" != \"validate\" || -z \"${2:-}\" ]]; then exit 127; fi\n"
-        "    printf 'VALID: %s (directory)\\n' \"$2\"\n"
+        "    if [[ -f \"$FAKE_SBX_DIR/validator.stdout\" ]]; then cat \"$FAKE_SBX_DIR/validator.stdout\"; else printf 'VALID: %s (directory)\\n' \"$2\"; fi\n"
+        "    if [[ -f \"$FAKE_SBX_DIR/validator.stderr\" ]]; then cat \"$FAKE_SBX_DIR/validator.stderr\" >&2; fi\n"
+        "    if [[ -f \"$FAKE_SBX_DIR/validator.status\" ]]; then exit \"$(cat \"$FAKE_SBX_DIR/validator.status\")\"; fi\n"
         "    exit 0\n"
         "    ;;\n"
         "  secret)\n"
@@ -125,6 +163,9 @@ def install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
         "  create)\n"
         "    if [[ \"${1:-}\" == \"--no-share-skills\" && \"${2:-}\" == \"--help\" ]]; then\n"
         "      printf 'create|%s\\n' \"$*\" >>\"$FAKE_SBX_CALLS\"\n"
+        "      if [[ -f \"$FAKE_SBX_DIR/parser.stderr\" ]]; then cat \"$FAKE_SBX_DIR/parser.stderr\" >&2; fi\n"
+        "      if [[ -f \"$FAKE_SBX_DIR/parser.remove-sbx\" ]]; then rm -- \"$0\"; fi\n"
+        "      if [[ -f \"$FAKE_SBX_DIR/parser.status\" ]]; then exit \"$(cat \"$FAKE_SBX_DIR/parser.status\")\"; fi\n"
         "      exit 0\n"
         "    fi\n"
         "    original_args=\"$*\"\n"
@@ -768,8 +809,199 @@ def test_missing_canonical_workflow_kit_fails_before_sandbox_execution(
     assert result.returncode == 1
     assert "Error: invalid Workflow Kit: required directory is missing:" in result.stderr
     assert "isolated-runner/sandbox-kits/workflow-skills" in result.stderr
+    assert "restore or reinstall the checked-in kit and retry" in result.stderr
     assert "Specode Loop preflight passed." not in result.stdout
+    assert not (project / "specode_loop.log").exists()
     assert_sandbox_not_called(calls_log)
+
+
+def test_missing_workflow_kit_anchor_is_an_actionable_invalid_kit_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    runner, kit = make_isolated_runner(tmp_path)
+    missing_anchor = (
+        kit
+        / "files"
+        / "home"
+        / ".agents"
+        / "skills"
+        / "specode-loop-implement"
+        / "agents"
+        / "openai.yaml"
+    )
+    missing_anchor.unlink()
+    path, calls_log = install_fake_sbx(tmp_path)
+    monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
+    monkeypatch.setenv("FAKE_SBX_DIR", str(tmp_path))
+
+    result = run_loop(project, path=path, runner=runner)
+
+    assert result.returncode == 1
+    assert "Error: invalid Workflow Kit:" in result.stderr
+    assert str(kit.resolve()) in result.stderr
+    assert str(missing_anchor) in result.stderr
+    assert "restore or reinstall the checked-in kit and retry" in result.stderr
+    assert not (project / "specode_loop.log").exists()
+    assert not (project / ".agents").exists()
+    assert not calls_log.exists()
+
+
+def test_supported_version_and_successful_warning_probes_are_accepted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    (tmp_path / "version.stdout").write_text(
+        "Docker Sandbox build 19\nrelease v12.40.7-beta+abc123\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "version.stderr").write_text("version warning\n", encoding="utf-8")
+    (tmp_path / "parser.stderr").write_text("parser warning\n", encoding="utf-8")
+    (tmp_path / "validator.stderr").write_text(
+        "validator warning\n", encoding="utf-8"
+    )
+    (tmp_path / "validator.stdout").write_text(
+        "VALID with detailed success output\n", encoding="utf-8"
+    )
+    write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 0
+    assert "version warning" not in result.stderr
+    assert "parser warning" not in result.stderr
+    assert "validator warning" not in result.stderr
+    assert "detailed success output" not in result.stdout
+    assert "detailed success output" not in (project / "specode_loop.log").read_text(
+        encoding="utf-8"
+    )
+    calls = calls_log.read_text(encoding="utf-8").splitlines()
+    assert calls[:3] == [
+        "version|",
+        "create|--no-share-skills --help",
+        f"kit|validate {WORKFLOW_KIT}",
+    ]
+
+
+def test_version_failures_are_actionable_compatibility_failures(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    scenarios = [
+        ("failed", "v0.38.1\n", "7\n", "observed version 0.38.1"),
+        ("unparseable", "development build\n", None, "observed version unavailable"),
+        (
+            "old",
+            "sbx v0.36.9+old; compatibility library v99.0.0\n",
+            None,
+            "observed version 0.36.9",
+        ),
+    ]
+
+    for _name, stdout, status, observed in scenarios:
+        (tmp_path / "version.stdout").write_text(stdout, encoding="utf-8")
+        if status is None:
+            (tmp_path / "version.status").unlink(missing_ok=True)
+        else:
+            (tmp_path / "version.status").write_text(status, encoding="utf-8")
+        calls_log.unlink(missing_ok=True)
+
+        result = run_loop(project, path=path)
+
+        assert result.returncode == 1
+        assert "Docker Sandbox compatibility failure: version check" in result.stderr
+        assert observed in result.stderr
+        assert "minimum version 0.37.0" in result.stderr
+        assert "upgrade Docker Sandbox and retry" in result.stderr
+        assert not (project / "specode_loop.log").exists()
+        assert calls_log.read_text(encoding="utf-8").splitlines() == ["version|"]
+
+
+def test_parser_rejection_is_an_actionable_compatibility_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    (tmp_path / "parser.status").write_text("2\n", encoding="utf-8")
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 1
+    assert "Docker Sandbox compatibility failure: create parser check" in result.stderr
+    assert "observed version 0.37.0" in result.stderr
+    assert "minimum version 0.37.0" in result.stderr
+    assert "upgrade Docker Sandbox and retry" in result.stderr
+    assert not (project / "specode_loop.log").exists()
+    assert calls_log.read_text(encoding="utf-8").splitlines() == [
+        "version|",
+        "create|--no-share-skills --help",
+    ]
+
+
+def test_parser_launch_failure_is_an_actionable_compatibility_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    (tmp_path / "version.remove-sbx").write_text("remove\n", encoding="utf-8")
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 1
+    assert "Docker Sandbox compatibility failure: create parser check" in result.stderr
+    assert "observed version 0.37.0" in result.stderr
+    assert "minimum version 0.37.0" in result.stderr
+    assert "upgrade Docker Sandbox and retry" in result.stderr
+    assert not (project / "specode_loop.log").exists()
+    assert calls_log.read_text(encoding="utf-8").splitlines() == ["version|"]
+
+
+def test_validator_launch_failure_is_an_actionable_compatibility_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    (tmp_path / "parser.remove-sbx").write_text("remove\n", encoding="utf-8")
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 1
+    assert "Docker Sandbox compatibility failure: kit validator launch" in result.stderr
+    assert "observed version 0.37.0" in result.stderr
+    assert "minimum version 0.37.0" in result.stderr
+    assert "upgrade Docker Sandbox and retry" in result.stderr
+    assert not (project / "specode_loop.log").exists()
+    assert calls_log.read_text(encoding="utf-8").splitlines() == [
+        "version|",
+        "create|--no-share-skills --help",
+    ]
+
+
+def test_validator_rejection_is_an_actionable_bounded_invalid_kit_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    diagnostic = "invalid field: " + ("x" * 5000)
+    (tmp_path / "validator.stderr").write_text(diagnostic, encoding="utf-8")
+    (tmp_path / "validator.status").write_text("1\n", encoding="utf-8")
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 1
+    assert "Error: invalid Workflow Kit: Docker validation failed" in result.stderr
+    assert str(WORKFLOW_KIT) in result.stderr
+    assert "invalid field:" in result.stderr
+    assert len(result.stderr) < 1500
+    assert "restore or reinstall the checked-in kit and retry" in result.stderr
+    assert not (project / "specode_loop.log").exists()
+    assert calls_log.read_text(encoding="utf-8").splitlines() == [
+        "version|",
+        "create|--no-share-skills --help",
+        f"kit|validate {WORKFLOW_KIT}",
+    ]
 
 
 def test_dirty_git_state_warns_and_continues(tmp_path: Path, monkeypatch) -> None:
@@ -942,7 +1174,11 @@ def test_missing_runtime_prerequisites_fail_before_sandbox_execution(tmp_path: P
     result = run_loop(project, path="")
 
     assert result.returncode == 1
-    assert "Error: Docker Sandbox CLI 'sbx' is not installed or not on PATH" in result.stderr
+    assert "Docker Sandbox compatibility failure: CLI discovery" in result.stderr
+    assert "Docker Sandbox CLI 'sbx' is not installed or not on PATH" in result.stderr
+    assert "minimum version 0.37.0" in result.stderr
+    assert "upgrade Docker Sandbox and retry" in result.stderr
+    assert not (project / "specode_loop.log").exists()
 
     path, calls_log = install_fake_sbx(tmp_path)
     monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
