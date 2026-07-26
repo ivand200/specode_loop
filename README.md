@@ -224,12 +224,12 @@ uv run --locked pytest
 GitHub Actions does not receive Docker Sandbox or OpenAI credentials and does
 not execute real-request E2E harnesses.
 
-### Manual release readiness
+### Release readiness
 
-The secretless `Release readiness` workflow verifies a provisional candidate
-without publishing it. In GitHub Actions, choose **Release readiness**, select
-**Run workflow**, and enter the candidate branch, tag, or full commit SHA in
-`candidate_ref`.
+The secretless `Release readiness` workflow verifies candidates without
+publishing them. For a provisional manual check, choose **Release readiness**
+in GitHub Actions, select **Run workflow**, and enter any candidate branch, tag,
+or full commit SHA in `candidate_ref`.
 
 The workflow repeats locked Ruff checks and the complete deterministic test
 suite on Python 3.11 and 3.14. If they pass, it creates one runtime-only archive
@@ -242,8 +242,18 @@ uv run --locked --no-dev python scripts/specode_loop.py --help
 
 A successful manual run retains `specode-loop-<short-commit>.tar.gz` under the
 stable `release-readiness-archive` artifact label for 14 days. GitHub reports
-the upload digest. The result is provisional: it does not publish a release,
-sign or attest the archive, or deploy anything.
+the upload digest. The result is provisional regardless of the selected ref.
+
+Pushing a tag whose name starts with `v` also starts the workflow. Before
+building, the workflow fetches the repository history and proves that the
+tagged commit is reachable from `origin/main`. A qualifying tag run retains
+`specode-loop-<tag>.tar.gz` under the same artifact label. A `v*` tag outside
+`main` fails before archive construction, and tags that do not start with `v`
+do not trigger this workflow.
+
+Both manual and tag artifacts are retained for review only. The workflow does
+not publish a release, compare the tag with the static project version, sign or
+attest the archive, or deploy anything.
 
 ### Real E2E
 
