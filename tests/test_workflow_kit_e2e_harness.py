@@ -4,7 +4,6 @@ import os
 import subprocess
 from pathlib import Path
 
-
 ROOT_DIR = Path(__file__).resolve().parents[1]
 HARNESS = ROOT_DIR / "tests" / "specode_loop_workflow_kit-e2e.sh"
 
@@ -76,8 +75,7 @@ else:
         cwd=ROOT_DIR,
         env=environment,
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
         check=False,
     )

@@ -11,7 +11,7 @@ import pytest
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT_DIR / "scripts"))
 
-from specode_loop_iteration import (  # noqa: E402
+from specode_loop_iteration import (
     SandboxIterationOutcome,
     SandboxIterationRequest,
     run_sandbox_iteration,
@@ -289,9 +289,7 @@ def test_escaping_planning_document_role_path_fails_before_sandbox_execution(
     invalid_request = SandboxIterationRequest(
         target_project=request.target_project,
         workflow_kit=request.workflow_kit,
-        prd_role_path=(
-            invalid_role_path if role == "prd" else request.prd_role_path
-        ),
+        prd_role_path=(invalid_role_path if role == "prd" else request.prd_role_path),
         plan_role_path=(
             invalid_role_path if role == "plan" else request.plan_role_path
         ),

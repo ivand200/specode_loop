@@ -12,8 +12,8 @@ from enum import auto as _auto
 from pathlib import Path as _Path
 
 __all__ = [
-    "SandboxIterationRequest",
     "SandboxIterationOutcome",
+    "SandboxIterationRequest",
     "run_sandbox_iteration",
 ]
 
@@ -59,7 +59,9 @@ def _validate_request(request: SandboxIterationRequest) -> None:
     try:
         resolved_workflow_kit = request.workflow_kit.resolve(strict=True)
     except OSError as error:
-        raise ValueError("Workflow Kit must be an existing resolved directory") from error
+        raise ValueError(
+            "Workflow Kit must be an existing resolved directory"
+        ) from error
     if (
         request.workflow_kit != resolved_workflow_kit
         or not resolved_workflow_kit.is_dir()
@@ -114,7 +116,7 @@ def _sanitize_name_part(value: str) -> str:
 def _new_sandbox_name(target_project: _Path, iteration: int) -> str:
     project_name = _sanitize_name_part(target_project.name)
     project_name = project_name[:20].rstrip("-") or "project"
-    run_stamp = _datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_stamp = _datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     name = f"specode-loop-{project_name}-{run_stamp}-{iteration:02d}-{_os.getpid()}"
     return name[:63].rstrip("-")
 
@@ -153,11 +155,10 @@ def _sandbox_environment() -> dict[str, str]:
 
 def _make_temp_output(iteration: int) -> _Path:
     tmp_dir = _os.environ.get("TMPDIR") or "/tmp"
-    handle = _tempfile.NamedTemporaryFile(
+    with _tempfile.NamedTemporaryFile(
         prefix=f"specode_loop.{iteration}.", dir=tmp_dir, delete=False
-    )
-    handle.close()
-    return _Path(handle.name)
+    ) as handle:
+        return _Path(handle.name)
 
 
 def _stream_sandbox_command(
@@ -191,12 +192,12 @@ def _terminate_and_reap(process: _subprocess.Popen[str]) -> None:
     try:
         if process.poll() is not None:
             return
-    except BaseException:
+    except BaseException:  # noqa: BLE001,S110 -- preserve the active exception.
         pass
 
     try:
         process.terminate()
-    except BaseException:
+    except BaseException:  # noqa: BLE001,S110 -- cleanup is best effort.
         pass
 
     try:
@@ -204,14 +205,14 @@ def _terminate_and_reap(process: _subprocess.Popen[str]) -> None:
         return
     except _subprocess.TimeoutExpired:
         pass
-    except BaseException:
+    except BaseException:  # noqa: BLE001,S110 -- continue with forced cleanup.
         pass
 
     killed = False
     try:
         process.kill()
         killed = True
-    except BaseException:
+    except BaseException:  # noqa: BLE001,S110 -- continue attempting to reap.
         pass
 
     try:
@@ -219,7 +220,7 @@ def _terminate_and_reap(process: _subprocess.Popen[str]) -> None:
             process.wait()
         else:
             process.wait(timeout=0)
-    except BaseException:
+    except BaseException:  # noqa: BLE001,S110 -- cleanup must not mask the caller.
         pass
 
 
@@ -248,7 +249,7 @@ def _cleanup_iteration(
     for artifact in artifacts:
         try:
             _remove_artifact(artifact)
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001 -- preserve control flow.
             if not isinstance(error, Exception) and cleanup_control_flow is None:
                 cleanup_control_flow = error
             try:
@@ -257,7 +258,7 @@ def _cleanup_iteration(
                     f"Artifact cleanup: failed to remove artifact {artifact} "
                     f"({type(error).__name__}: {error}).",
                 )
-            except BaseException as reporting_error:
+            except BaseException as reporting_error:  # noqa: BLE001
                 if (
                     not isinstance(reporting_error, Exception)
                     and cleanup_control_flow is None
@@ -277,7 +278,7 @@ def _cleanup_iteration(
             env=_sandbox_environment(),
         )
         cleanup_status = cleanup.returncode
-    except BaseException as error:
+    except BaseException as error:  # noqa: BLE001 -- cleanup must finish first.
         cleanup_error = error
         if not isinstance(error, Exception) and cleanup_control_flow is None:
             cleanup_control_flow = error
@@ -301,7 +302,7 @@ def _cleanup_iteration(
         else:
             with request.project_log.open("a", encoding="utf-8") as log:
                 log.write(f"{message}\n")
-    except BaseException as reporting_error:
+    except BaseException as reporting_error:  # noqa: BLE001
         if not isinstance(reporting_error, Exception) and cleanup_control_flow is None:
             cleanup_control_flow = reporting_error
 

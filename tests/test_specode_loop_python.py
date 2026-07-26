@@ -6,18 +6,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 ROOT_DIR = Path(__file__).resolve().parents[1]
 RUNNER = ROOT_DIR / "scripts" / "specode_loop.py"
 ITERATION_MODULE = ROOT_DIR / "scripts" / "specode_loop_iteration.py"
 WORKFLOW_KIT = ROOT_DIR / "sandbox-kits" / "workflow-skills"
 WORKFLOW_SKILL = (
-    WORKFLOW_KIT
-    / "files"
-    / "home"
-    / ".agents"
-    / "skills"
-    / "specode-loop-implement"
+    WORKFLOW_KIT / "files" / "home" / ".agents" / "skills" / "specode-loop-implement"
 )
 AUTH_E2E = ROOT_DIR / "tests" / "specode_loop_auth-e2e.sh"
 
@@ -44,8 +38,7 @@ def run_loop(
         env=env,
         text=True,
         input=input_text,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
 
@@ -77,14 +70,7 @@ def make_isolated_runner(tmp_path: Path) -> tuple[Path, Path]:
     shutil.copyfile(ITERATION_MODULE, scripts / "specode_loop_iteration.py")
 
     kit = isolated_root / "sandbox-kits" / "workflow-skills"
-    skill = (
-        kit
-        / "files"
-        / "home"
-        / ".agents"
-        / "skills"
-        / "specode-loop-implement"
-    )
+    skill = kit / "files" / "home" / ".agents" / "skills" / "specode-loop-implement"
     (skill / "agents").mkdir(parents=True)
     (kit / "spec.yaml").write_text(
         'schemaVersion: "1"\nkind: mixin\nname: specode-loop-workflow-skills\n',
@@ -126,120 +112,120 @@ def install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
     fake_sbx.write_text(
         "#!/usr/bin/env bash\n"
         "set -u\n"
-        "cmd=\"${1:-}\"\n"
+        'cmd="${1:-}"\n'
         "shift || true\n"
-        "if [[ \"${FAKE_SBX_RECORD_AUTH_ENV:-}\" == \"1\" ]]; then\n"
-        "  printf 'auth-env|OPENAI_API_KEY=%s|CODEX_API_KEY=%s\\n' \"${OPENAI_API_KEY:-unset}\" \"${CODEX_API_KEY:-unset}\" >>\"$FAKE_SBX_CALLS\"\n"
+        'if [[ "${FAKE_SBX_RECORD_AUTH_ENV:-}" == "1" ]]; then\n'
+        '  printf \'auth-env|OPENAI_API_KEY=%s|CODEX_API_KEY=%s\\n\' "${OPENAI_API_KEY:-unset}" "${CODEX_API_KEY:-unset}" >>"$FAKE_SBX_CALLS"\n'
         "fi\n"
-        "case \"$cmd\" in\n"
+        'case "$cmd" in\n'
         "  version)\n"
-        "    printf 'version|%s\\n' \"$*\" >>\"$FAKE_SBX_CALLS\"\n"
-        "    if [[ -f \"$FAKE_SBX_DIR/version.stdout\" ]]; then cat \"$FAKE_SBX_DIR/version.stdout\"; else printf 'v0.37.0 (test build)\\n'; fi\n"
-        "    if [[ -f \"$FAKE_SBX_DIR/version.stderr\" ]]; then cat \"$FAKE_SBX_DIR/version.stderr\" >&2; fi\n"
-        "    if [[ -f \"$FAKE_SBX_DIR/version.remove-sbx\" ]]; then rm -- \"$0\"; fi\n"
-        "    if [[ -f \"$FAKE_SBX_DIR/version.status\" ]]; then exit \"$(cat \"$FAKE_SBX_DIR/version.status\")\"; fi\n"
+        '    printf \'version|%s\\n\' "$*" >>"$FAKE_SBX_CALLS"\n'
+        '    if [[ -f "$FAKE_SBX_DIR/version.stdout" ]]; then cat "$FAKE_SBX_DIR/version.stdout"; else printf \'v0.37.0 (test build)\\n\'; fi\n'
+        '    if [[ -f "$FAKE_SBX_DIR/version.stderr" ]]; then cat "$FAKE_SBX_DIR/version.stderr" >&2; fi\n'
+        '    if [[ -f "$FAKE_SBX_DIR/version.remove-sbx" ]]; then rm -- "$0"; fi\n'
+        '    if [[ -f "$FAKE_SBX_DIR/version.status" ]]; then exit "$(cat "$FAKE_SBX_DIR/version.status")"; fi\n'
         "    exit 0\n"
         "    ;;\n"
         "  kit)\n"
-        "    printf 'kit|%s\\n' \"$*\" >>\"$FAKE_SBX_CALLS\"\n"
-        "    if [[ \"${1:-}\" != \"validate\" || -z \"${2:-}\" ]]; then exit 127; fi\n"
-        "    if [[ -f \"$FAKE_SBX_DIR/validator.stdout\" ]]; then cat \"$FAKE_SBX_DIR/validator.stdout\"; else printf 'VALID: %s (directory)\\n' \"$2\"; fi\n"
-        "    if [[ -f \"$FAKE_SBX_DIR/validator.stderr\" ]]; then cat \"$FAKE_SBX_DIR/validator.stderr\" >&2; fi\n"
-        "    if [[ -f \"$FAKE_SBX_DIR/validator.status\" ]]; then exit \"$(cat \"$FAKE_SBX_DIR/validator.status\")\"; fi\n"
+        '    printf \'kit|%s\\n\' "$*" >>"$FAKE_SBX_CALLS"\n'
+        '    if [[ "${1:-}" != "validate" || -z "${2:-}" ]]; then exit 127; fi\n'
+        '    if [[ -f "$FAKE_SBX_DIR/validator.stdout" ]]; then cat "$FAKE_SBX_DIR/validator.stdout"; else printf \'VALID: %s (directory)\\n\' "$2"; fi\n'
+        '    if [[ -f "$FAKE_SBX_DIR/validator.stderr" ]]; then cat "$FAKE_SBX_DIR/validator.stderr" >&2; fi\n'
+        '    if [[ -f "$FAKE_SBX_DIR/validator.status" ]]; then exit "$(cat "$FAKE_SBX_DIR/validator.status")"; fi\n'
         "    exit 0\n"
         "    ;;\n"
         "  secret)\n"
-        "    if [[ \"${1:-}\" != \"ls\" ]]; then\n"
+        '    if [[ "${1:-}" != "ls" ]]; then\n'
         "      printf 'unexpected fake sbx secret command: %s\\n' \"$*\" >&2\n"
         "      exit 127\n"
         "    fi\n"
-        "    if [[ -n \"${FAKE_SBX_DIR:-}\" && -f \"$FAKE_SBX_DIR/secret.status\" ]]; then exit \"$(cat \"$FAKE_SBX_DIR/secret.status\")\"; fi\n"
+        '    if [[ -n "${FAKE_SBX_DIR:-}" && -f "$FAKE_SBX_DIR/secret.status" ]]; then exit "$(cat "$FAKE_SBX_DIR/secret.status")"; fi\n'
         "    printf 'SCOPE      SERVICE   SECRET\\n'\n"
-        "    if [[ \"${FAKE_SBX_OPENAI_SECRET:-oauth}\" != \"missing\" ]]; then\n"
+        '    if [[ "${FAKE_SBX_OPENAI_SECRET:-oauth}" != "missing" ]]; then\n'
         "      printf '(global)   openai    %s\\n' \"${FAKE_SBX_OPENAI_SECRET:-oauth}\"\n"
         "    fi\n"
         "    exit 0\n"
         "    ;;\n"
         "  create)\n"
-        "    if [[ \"${1:-}\" == \"--no-share-skills\" && \"${2:-}\" == \"--help\" ]]; then\n"
-        "      printf 'create|%s\\n' \"$*\" >>\"$FAKE_SBX_CALLS\"\n"
-        "      if [[ -f \"$FAKE_SBX_DIR/parser.stderr\" ]]; then cat \"$FAKE_SBX_DIR/parser.stderr\" >&2; fi\n"
-        "      if [[ -f \"$FAKE_SBX_DIR/parser.remove-sbx\" ]]; then rm -- \"$0\"; fi\n"
-        "      if [[ -f \"$FAKE_SBX_DIR/parser.status\" ]]; then exit \"$(cat \"$FAKE_SBX_DIR/parser.status\")\"; fi\n"
+        '    if [[ "${1:-}" == "--no-share-skills" && "${2:-}" == "--help" ]]; then\n'
+        '      printf \'create|%s\\n\' "$*" >>"$FAKE_SBX_CALLS"\n'
+        '      if [[ -f "$FAKE_SBX_DIR/parser.stderr" ]]; then cat "$FAKE_SBX_DIR/parser.stderr" >&2; fi\n'
+        '      if [[ -f "$FAKE_SBX_DIR/parser.remove-sbx" ]]; then rm -- "$0"; fi\n'
+        '      if [[ -f "$FAKE_SBX_DIR/parser.status" ]]; then exit "$(cat "$FAKE_SBX_DIR/parser.status")"; fi\n'
         "      exit 0\n"
         "    fi\n"
-        "    original_args=\"$*\"\n"
-        "    name=\"\"\n"
-        "    project=\"\"\n"
+        '    original_args="$*"\n'
+        '    name=""\n'
+        '    project=""\n'
         "    while [[ $# -gt 0 ]]; do\n"
-        "      case \"$1\" in\n"
+        '      case "$1" in\n'
         "        --no-share-skills) shift ;;\n"
-        "        --name) name=\"${2:-}\"; shift 2 ;;\n"
+        '        --name) name="${2:-}"; shift 2 ;;\n'
         "        --kit) shift 2 ;;\n"
-        "        codex) project=\"${2:-}\"; break ;;\n"
+        '        codex) project="${2:-}"; break ;;\n'
         "        *) shift ;;\n"
         "      esac\n"
         "    done\n"
-        "    printf 'create|%s|%s\\n' \"$name\" \"$original_args\" >>\"$FAKE_SBX_CALLS\"\n"
-        "    if [[ -n \"$project\" ]]; then\n"
+        '    printf \'create|%s|%s\\n\' "$name" "$original_args" >>"$FAKE_SBX_CALLS"\n'
+        '    if [[ -n "$project" ]]; then\n'
         "      for skill_name in do-work specode-do-work; do\n"
-        "        skill_path=\"$project/.agents/skills/$skill_name/SKILL.md\"\n"
-        "        if [[ -f \"$skill_path\" ]]; then\n"
-        "          printf 'skill-before-exec|%s|present\\n' \"$skill_path\" >>\"$FAKE_SBX_CALLS\"\n"
+        '        skill_path="$project/.agents/skills/$skill_name/SKILL.md"\n'
+        '        if [[ -f "$skill_path" ]]; then\n'
+        '          printf \'skill-before-exec|%s|present\\n\' "$skill_path" >>"$FAKE_SBX_CALLS"\n'
         "        else\n"
-        "          printf 'skill-before-exec|%s|missing\\n' \"$skill_path\" >>\"$FAKE_SBX_CALLS\"\n"
+        '          printf \'skill-before-exec|%s|missing\\n\' "$skill_path" >>"$FAKE_SBX_CALLS"\n'
         "        fi\n"
         "      done\n"
         "    fi\n"
-        "    if [[ -f \"$FAKE_SBX_DIR/create.status\" ]]; then exit \"$(cat \"$FAKE_SBX_DIR/create.status\")\"; fi\n"
+        '    if [[ -f "$FAKE_SBX_DIR/create.status" ]]; then exit "$(cat "$FAKE_SBX_DIR/create.status")"; fi\n'
         "    exit 0\n"
         "    ;;\n"
         "  exec)\n"
-        "    name=\"${1:-}\"\n"
+        '    name="${1:-}"\n'
         "    shift || true\n"
-        "    count_file=\"$FAKE_SBX_DIR/count\"\n"
+        '    count_file="$FAKE_SBX_DIR/count"\n'
         "    count=0\n"
-        "    if [[ -f \"$count_file\" ]]; then count=\"$(cat \"$count_file\")\"; fi\n"
+        '    if [[ -f "$count_file" ]]; then count="$(cat "$count_file")"; fi\n'
         "    count=$((count + 1))\n"
-        "    printf '%s\\n' \"$count\" >\"$count_file\"\n"
-        "    printf 'exec|%s|%s\\n' \"$name\" \"$*\" >>\"$FAKE_SBX_CALLS\"\n"
-        "    output_file=\"$FAKE_SBX_DIR/run_${count}.out\"\n"
-        "    status_file=\"$FAKE_SBX_DIR/run_${count}.status\"\n"
-        "    interrupt_file=\"$FAKE_SBX_DIR/run_${count}.interrupt\"\n"
-        "    last_message_file=\"$FAKE_SBX_DIR/run_${count}.last\"\n"
-        "    if [[ -f \"$output_file\" ]]; then cat \"$output_file\"; fi\n"
-        "    if [[ \"${FAKE_SBX_ECHO_STDIN:-}\" == \"1\" ]]; then\n"
-        "      stdin_payload=\"$(cat)\"\n"
-        "      if [[ -n \"$stdin_payload\" ]]; then\n"
-        "        printf 'stdin|%s\\n' \"$stdin_payload\" >>\"$FAKE_SBX_CALLS\"\n"
+        '    printf \'%s\\n\' "$count" >"$count_file"\n'
+        '    printf \'exec|%s|%s\\n\' "$name" "$*" >>"$FAKE_SBX_CALLS"\n'
+        '    output_file="$FAKE_SBX_DIR/run_${count}.out"\n'
+        '    status_file="$FAKE_SBX_DIR/run_${count}.status"\n'
+        '    interrupt_file="$FAKE_SBX_DIR/run_${count}.interrupt"\n'
+        '    last_message_file="$FAKE_SBX_DIR/run_${count}.last"\n'
+        '    if [[ -f "$output_file" ]]; then cat "$output_file"; fi\n'
+        '    if [[ "${FAKE_SBX_ECHO_STDIN:-}" == "1" ]]; then\n'
+        '      stdin_payload="$(cat)"\n'
+        '      if [[ -n "$stdin_payload" ]]; then\n'
+        '        printf \'stdin|%s\\n\' "$stdin_payload" >>"$FAKE_SBX_CALLS"\n'
         "        printf 'STDIN:%s\\n' \"$stdin_payload\"\n"
         "      fi\n"
         "    fi\n"
-        "    if [[ -f \"$last_message_file\" ]]; then\n"
-        "      output_path=\"\"\n"
-        "      previous=\"\"\n"
-        "      for arg in \"$@\"; do\n"
-        "        if [[ \"$previous\" == \"-o\" ]]; then output_path=\"$arg\"; break; fi\n"
-        "        previous=\"$arg\"\n"
+        '    if [[ -f "$last_message_file" ]]; then\n'
+        '      output_path=""\n'
+        '      previous=""\n'
+        '      for arg in "$@"; do\n'
+        '        if [[ "$previous" == "-o" ]]; then output_path="$arg"; break; fi\n'
+        '        previous="$arg"\n'
         "      done\n"
-        "      if [[ -n \"$output_path\" ]]; then cat \"$last_message_file\" >\"$output_path\"; fi\n"
+        '      if [[ -n "$output_path" ]]; then cat "$last_message_file" >"$output_path"; fi\n'
         "    fi\n"
-        "    if [[ -f \"$interrupt_file\" ]]; then\n"
-        "      kill -TERM \"$PPID\"\n"
+        '    if [[ -f "$interrupt_file" ]]; then\n'
+        '      kill -TERM "$PPID"\n'
         "      sleep 0.1\n"
         "      exit 143\n"
         "    fi\n"
-        "    if [[ -f \"$status_file\" ]]; then exit \"$(cat \"$status_file\")\"; fi\n"
+        '    if [[ -f "$status_file" ]]; then exit "$(cat "$status_file")"; fi\n'
         "    exit 0\n"
         "    ;;\n"
         "  rm)\n"
-        "    if [[ \"${1:-}\" != \"--force\" ]]; then\n"
+        '    if [[ "${1:-}" != "--force" ]]; then\n'
         "      printf 'expected sbx rm --force, got: %s\\n' \"$*\" >&2\n"
         "      exit 64\n"
         "    fi\n"
         "    shift\n"
-        "    printf 'rm|%s\\n' \"${1:-}\" >>\"$FAKE_SBX_RM_CALLS\"\n"
-        "    if [[ -f \"$FAKE_SBX_DIR/rm.status\" ]]; then exit \"$(cat \"$FAKE_SBX_DIR/rm.status\")\"; fi\n"
+        '    printf \'rm|%s\\n\' "${1:-}" >>"$FAKE_SBX_RM_CALLS"\n'
+        '    if [[ -f "$FAKE_SBX_DIR/rm.status" ]]; then exit "$(cat "$FAKE_SBX_DIR/rm.status")"; fi\n'
         "    exit 0\n"
         "    ;;\n"
         "  *)\n"
@@ -254,14 +240,18 @@ def install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
     return path, calls_log
 
 
-def write_scenario(tmp_path: Path, run_number: int, output: str, status: int = 0) -> None:
+def write_scenario(
+    tmp_path: Path, run_number: int, output: str, status: int = 0
+) -> None:
     (tmp_path / f"run_{run_number}.out").write_text(output, encoding="utf-8")
     (tmp_path / f"run_{run_number}.status").write_text(f"{status}\n", encoding="utf-8")
 
 
 def write_interrupt(tmp_path: Path, run_number: int, output: str) -> None:
     (tmp_path / f"run_{run_number}.out").write_text(output, encoding="utf-8")
-    (tmp_path / f"run_{run_number}.interrupt").write_text("interrupt\n", encoding="utf-8")
+    (tmp_path / f"run_{run_number}.interrupt").write_text(
+        "interrupt\n", encoding="utf-8"
+    )
 
 
 def assert_sandbox_not_called(calls_log: Path) -> None:
@@ -451,8 +441,7 @@ def test_blessed_uv_run_python_invocation_shows_help() -> None:
         ["uv", "run", "python", "scripts/specode_loop.py", "--help"],
         cwd=ROOT_DIR,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
 
@@ -477,7 +466,9 @@ def test_missing_target_project_argument_prints_usage() -> None:
     assert result.stdout == ""
 
 
-def test_option_parsing_and_valid_run_execute_sandbox(tmp_path: Path, monkeypatch) -> None:
+def test_option_parsing_and_valid_run_execute_sandbox(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = make_project(tmp_path)
     path, calls_log, rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
     write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
@@ -507,7 +498,10 @@ def test_option_parsing_and_valid_run_execute_sandbox(tmp_path: Path, monkeypatc
     assert "--no-share-skills --name specode-loop-project-" in calls
     assert f"--kit {WORKFLOW_KIT} codex {project}" in calls
     assert "exec|specode-loop-project-" in calls
-    assert f"codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C {project}" in calls
+    assert (
+        f"codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C {project}"
+        in calls
+    )
     log = (project / "specode_loop.log").read_text(encoding="utf-8")
     evidence = f"Workflow kit validated: {WORKFLOW_KIT}"
     assert result.stdout.count(evidence) == 1
@@ -535,9 +529,7 @@ def test_oauth_is_default_and_rejects_stored_api_key_before_sandbox_execution(
     assert_bundled_skill_not_synced(project)
     assert_sandbox_not_called(calls_log)
     workflow_kit_probes = (
-        calls_log.read_text(encoding="utf-8").splitlines()
-        if calls_log.exists()
-        else []
+        calls_log.read_text(encoding="utf-8").splitlines() if calls_log.exists() else []
     )
     assert workflow_kit_probes == []
 
@@ -591,7 +583,9 @@ def test_oauth_mode_does_not_pass_api_key_environment_to_sbx(
     assert "auth-env|OPENAI_API_KEY=unset|CODEX_API_KEY=unset" in calls
 
 
-def test_default_model_and_reasoning_effort_are_passed_to_codex(tmp_path: Path, monkeypatch) -> None:
+def test_default_model_and_reasoning_effort_are_passed_to_codex(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = make_project(tmp_path, "defaults")
     path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
     write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
@@ -605,11 +599,13 @@ def test_default_model_and_reasoning_effort_are_passed_to_codex(tmp_path: Path, 
     assert (
         f"codex exec --dangerously-bypass-approvals-and-sandbox "
         f"--skip-git-repo-check -C {project} -m gpt-5.6-sol -c "
-        f"model_reasoning_effort=\"medium\" -o {project}/.specode_loop-last-message."
+        f'model_reasoning_effort="medium" -o {project}/.specode_loop-last-message.'
     ) in calls
 
 
-def test_custom_planning_document_paths_resolve_from_project_and_reach_prompt(tmp_path: Path, monkeypatch) -> None:
+def test_custom_planning_document_paths_resolve_from_project_and_reach_prompt(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = tmp_path / "custom-docs"
     project.mkdir()
     prd = project / "planning" / "requirements"
@@ -641,7 +637,9 @@ def test_custom_planning_document_paths_resolve_from_project_and_reach_prompt(tm
     assert "Plan document: work/phases.todo" in calls
 
 
-def test_absolute_custom_planning_document_paths_inside_project_are_accepted(tmp_path: Path, monkeypatch) -> None:
+def test_absolute_custom_planning_document_paths_inside_project_are_accepted(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = tmp_path / "absolute-docs"
     project.mkdir()
     prd = project / "docs" / "product brief"
@@ -663,7 +661,9 @@ def test_absolute_custom_planning_document_paths_inside_project_are_accepted(tmp
     assert "Plan document: plans/release" in calls
 
 
-def test_successive_task_done_iterations_continue_until_all_tasks_done(tmp_path: Path, monkeypatch) -> None:
+def test_successive_task_done_iterations_continue_until_all_tasks_done(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = make_project(tmp_path, "multi-step")
     path, calls_log, rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
     write_scenario(tmp_path, 1, "working\nTASK DONE\n")
@@ -697,7 +697,9 @@ def test_failed_sandbox_iteration_maps_to_runner_failure_status(
     assert "Sandbox iteration failed without a success sentinel." in result.stdout
 
 
-def test_interrupt_cleans_temp_files_and_active_sandbox(tmp_path: Path, monkeypatch) -> None:
+def test_interrupt_cleans_temp_files_and_active_sandbox(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = make_project(tmp_path, "interrupt")
     path, _calls_log, rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
     write_interrupt(tmp_path, 1, "starting long run\n")
@@ -713,7 +715,9 @@ def test_interrupt_cleans_temp_files_and_active_sandbox(tmp_path: Path, monkeypa
     assert_no_temp_artifacts(tmp_path, project)
 
 
-def test_max_iteration_cap_fails_without_no_sentinel_diagnostics(tmp_path: Path, monkeypatch) -> None:
+def test_max_iteration_cap_fails_without_no_sentinel_diagnostics(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = make_project(tmp_path, "max-cap")
     path, _calls_log, rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
     write_scenario(tmp_path, 1, "TASK DONE\n")
@@ -725,7 +729,10 @@ def test_max_iteration_cap_fails_without_no_sentinel_diagnostics(tmp_path: Path,
     assert result.returncode == 1
     assert "Specode Loop stopped at the maximum iteration cap." in result.stdout
     assert "Configured maximum iterations reached: 2" in result.stdout
-    assert "Stop reason: reached max iterations (2) before ALL TASKS DONE." in result.stdout
+    assert (
+        "Stop reason: reached max iterations (2) before ALL TASKS DONE."
+        in result.stdout
+    )
     assert "ALL TASKS DONE was not observed." in result.stdout
     assert f"Project log: {project / 'specode_loop.log'}" in result.stdout
     assert "Sandbox iteration failed without a success sentinel." not in result.stdout
@@ -806,14 +813,10 @@ def test_canonical_workflow_kit_owns_the_complete_service_skill() -> None:
         'schemaVersion: "1"\nkind: mixin\nname: specode-loop-workflow-skills\n'
     )
     skill_manifest = (WORKFLOW_SKILL / "SKILL.md").read_text(encoding="utf-8")
-    policy = (WORKFLOW_SKILL / "agents" / "openai.yaml").read_text(
-        encoding="utf-8"
-    )
+    policy = (WORKFLOW_SKILL / "agents" / "openai.yaml").read_text(encoding="utf-8")
     assert "name: specode-loop-implement" in skill_manifest
     assert "allow_implicit_invocation: true" in policy
-    assert not (
-        ROOT_DIR / ".agents" / "skills" / "do-work" / "SKILL.md"
-    ).exists()
+    assert not (ROOT_DIR / ".agents" / "skills" / "do-work" / "SKILL.md").exists()
     assert not (
         ROOT_DIR / ".agents" / "skills" / "specode-do-work" / "SKILL.md"
     ).exists()
@@ -849,7 +852,9 @@ def test_missing_canonical_workflow_kit_fails_before_sandbox_execution(
     result = run_loop(project, path=path, runner=isolated_runner)
 
     assert result.returncode == 1
-    assert "Error: invalid Workflow Kit: required directory is missing:" in result.stderr
+    assert (
+        "Error: invalid Workflow Kit: required directory is missing:" in result.stderr
+    )
     assert "isolated-runner/sandbox-kits/workflow-skills" in result.stderr
     assert "restore or reinstall the checked-in kit and retry" in result.stderr
     assert "Specode Loop preflight passed." not in result.stdout
@@ -900,9 +905,7 @@ def test_supported_version_and_successful_warning_probes_are_accepted(
     )
     (tmp_path / "version.stderr").write_text("version warning\n", encoding="utf-8")
     (tmp_path / "parser.stderr").write_text("parser warning\n", encoding="utf-8")
-    (tmp_path / "validator.stderr").write_text(
-        "validator warning\n", encoding="utf-8"
-    )
+    (tmp_path / "validator.stderr").write_text("validator warning\n", encoding="utf-8")
     (tmp_path / "validator.stdout").write_text(
         "VALID with detailed success output\n", encoding="utf-8"
     )
@@ -1051,7 +1054,9 @@ def test_dirty_git_state_warns_and_continues(tmp_path: Path, monkeypatch) -> Non
     path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
     write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
     subprocess.run(["git", "init", "-q"], cwd=project, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=project, check=True
+    )
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=project, check=True)
     subprocess.run(["git", "add", "prd.md", "plan.md"], cwd=project, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=project, check=True)
@@ -1062,8 +1067,13 @@ def test_dirty_git_state_warns_and_continues(tmp_path: Path, monkeypatch) -> Non
     result = run_loop(project, path=path)
 
     assert result.returncode == 0
-    assert f"Warning: {project} has existing unstaged changes. Continuing." in result.stderr
-    assert f"Warning: {project} has existing staged changes. Continuing." in result.stderr
+    assert (
+        f"Warning: {project} has existing unstaged changes. Continuing."
+        in result.stderr
+    )
+    assert (
+        f"Warning: {project} has existing staged changes. Continuing." in result.stderr
+    )
     assert "Specode Loop preflight passed." in result.stdout
     assert_sandbox_called(calls_log)
 
@@ -1084,7 +1094,9 @@ def test_missing_host_skill_does_not_trigger_target_project_fallback(
     assert f"--kit {WORKFLOW_KIT} codex {project}" in calls
 
 
-def test_invalid_options_fail_before_sandbox_execution(tmp_path: Path, monkeypatch) -> None:
+def test_invalid_options_fail_before_sandbox_execution(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = make_project(tmp_path)
     path, calls_log = install_fake_sbx(tmp_path)
     monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
@@ -1092,8 +1104,14 @@ def test_invalid_options_fail_before_sandbox_execution(tmp_path: Path, monkeypat
     cases = [
         (("--max-iterations", "0"), "--max-iterations must be a positive integer"),
         (("--max-iterations", "abc"), "--max-iterations must be a positive integer"),
-        (("--effort", "enormous"), "--effort must be one of: minimal, low, medium, high, xhigh"),
-        (("--reasoning-effort", "enormous"), "--effort must be one of: minimal, low, medium, high, xhigh"),
+        (
+            ("--effort", "enormous"),
+            "--effort must be one of: minimal, low, medium, high, xhigh",
+        ),
+        (
+            ("--reasoning-effort", "enormous"),
+            "--effort must be one of: minimal, low, medium, high, xhigh",
+        ),
         (("--max-iterations",), "--max-iterations requires a value"),
         (("--model",), "--model requires a value"),
         (("--auth",), "--auth requires a value"),
@@ -1124,7 +1142,9 @@ def test_project_option_must_be_first_argument(tmp_path: Path, monkeypatch) -> N
     assert_sandbox_not_called(calls_log)
 
 
-def test_missing_custom_planning_documents_fail_before_sandbox_execution(tmp_path: Path, monkeypatch) -> None:
+def test_missing_custom_planning_documents_fail_before_sandbox_execution(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = tmp_path / "missing-custom-docs"
     project.mkdir()
     (project / "real-prd").write_text("# PRD\n", encoding="utf-8")
@@ -1132,20 +1152,32 @@ def test_missing_custom_planning_documents_fail_before_sandbox_execution(tmp_pat
     path, calls_log = install_fake_sbx(tmp_path)
     monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
 
-    missing_prd = run_loop(project, "--prd", "missing-prd", "--plan", "real-plan", path=path)
+    missing_prd = run_loop(
+        project, "--prd", "missing-prd", "--plan", "real-plan", path=path
+    )
     assert missing_prd.returncode == 1
-    assert f"Error: required PRD document is missing: {project / 'missing-prd'}" in missing_prd.stderr
+    assert (
+        f"Error: required PRD document is missing: {project / 'missing-prd'}"
+        in missing_prd.stderr
+    )
     assert "Specode Loop preflight passed." not in missing_prd.stdout
     assert_sandbox_not_called(calls_log)
 
-    missing_plan = run_loop(project, "--prd", "real-prd", "--plan", "missing-plan", path=path)
+    missing_plan = run_loop(
+        project, "--prd", "real-prd", "--plan", "missing-plan", path=path
+    )
     assert missing_plan.returncode == 1
-    assert f"Error: required plan document is missing: {project / 'missing-plan'}" in missing_plan.stderr
+    assert (
+        f"Error: required plan document is missing: {project / 'missing-plan'}"
+        in missing_plan.stderr
+    )
     assert "Specode Loop preflight passed." not in missing_plan.stdout
     assert_sandbox_not_called(calls_log)
 
 
-def test_relative_planning_document_paths_cannot_escape_project(tmp_path: Path, monkeypatch) -> None:
+def test_relative_planning_document_paths_cannot_escape_project(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = make_project(tmp_path, "containment-relative")
     outside_prd = tmp_path / "outside-prd"
     outside_plan = tmp_path / "outside-plan"
@@ -1156,20 +1188,28 @@ def test_relative_planning_document_paths_cannot_escape_project(tmp_path: Path, 
 
     prd_result = run_loop(project, "--prd", "../outside-prd", path=path)
     assert prd_result.returncode == 1
-    assert "Error: selected PRD document must resolve inside the Target Project:" in prd_result.stderr
+    assert (
+        "Error: selected PRD document must resolve inside the Target Project:"
+        in prd_result.stderr
+    )
     assert "Specode Loop preflight passed." not in prd_result.stdout
     assert_bundled_skill_not_synced(project)
     assert_sandbox_not_called(calls_log)
 
     plan_result = run_loop(project, "--plan", "../outside-plan", path=path)
     assert plan_result.returncode == 1
-    assert "Error: selected plan document must resolve inside the Target Project:" in plan_result.stderr
+    assert (
+        "Error: selected plan document must resolve inside the Target Project:"
+        in plan_result.stderr
+    )
     assert "Specode Loop preflight passed." not in plan_result.stdout
     assert_bundled_skill_not_synced(project)
     assert_sandbox_not_called(calls_log)
 
 
-def test_absolute_planning_document_paths_cannot_escape_project(tmp_path: Path, monkeypatch) -> None:
+def test_absolute_planning_document_paths_cannot_escape_project(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = make_project(tmp_path, "containment-absolute")
     outside_prd = tmp_path / "absolute-outside-prd"
     outside_plan = tmp_path / "absolute-outside-plan"
@@ -1180,20 +1220,28 @@ def test_absolute_planning_document_paths_cannot_escape_project(tmp_path: Path, 
 
     prd_result = run_loop(project, "--prd", str(outside_prd), path=path)
     assert prd_result.returncode == 1
-    assert "Error: selected PRD document must resolve inside the Target Project:" in prd_result.stderr
+    assert (
+        "Error: selected PRD document must resolve inside the Target Project:"
+        in prd_result.stderr
+    )
     assert "Specode Loop preflight passed." not in prd_result.stdout
     assert_bundled_skill_not_synced(project)
     assert_sandbox_not_called(calls_log)
 
     plan_result = run_loop(project, "--plan", str(outside_plan), path=path)
     assert plan_result.returncode == 1
-    assert "Error: selected plan document must resolve inside the Target Project:" in plan_result.stderr
+    assert (
+        "Error: selected plan document must resolve inside the Target Project:"
+        in plan_result.stderr
+    )
     assert "Specode Loop preflight passed." not in plan_result.stdout
     assert_bundled_skill_not_synced(project)
     assert_sandbox_not_called(calls_log)
 
 
-def test_planning_document_symlinks_cannot_resolve_outside_project(tmp_path: Path, monkeypatch) -> None:
+def test_planning_document_symlinks_cannot_resolve_outside_project(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = make_project(tmp_path, "containment-symlink")
     outside_prd = tmp_path / "symlink-target-prd"
     outside_prd.write_text("# Outside PRD\n", encoding="utf-8")
@@ -1205,13 +1253,18 @@ def test_planning_document_symlinks_cannot_resolve_outside_project(tmp_path: Pat
     result = run_loop(project, "--prd", "linked-prd", path=path)
 
     assert result.returncode == 1
-    assert "Error: selected PRD document must resolve inside the Target Project:" in result.stderr
+    assert (
+        "Error: selected PRD document must resolve inside the Target Project:"
+        in result.stderr
+    )
     assert "Specode Loop preflight passed." not in result.stdout
     assert_bundled_skill_not_synced(project)
     assert_sandbox_not_called(calls_log)
 
 
-def test_missing_runtime_prerequisites_fail_before_sandbox_execution(tmp_path: Path, monkeypatch) -> None:
+def test_missing_runtime_prerequisites_fail_before_sandbox_execution(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = make_project(tmp_path)
     result = run_loop(project, path="")
 
