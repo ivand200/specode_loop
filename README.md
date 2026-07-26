@@ -224,6 +224,27 @@ uv run --locked pytest
 GitHub Actions does not receive Docker Sandbox or OpenAI credentials and does
 not execute real-request E2E harnesses.
 
+### Manual release readiness
+
+The secretless `Release readiness` workflow verifies a provisional candidate
+without publishing it. In GitHub Actions, choose **Release readiness**, select
+**Run workflow**, and enter the candidate branch, tag, or full commit SHA in
+`candidate_ref`.
+
+The workflow repeats locked Ruff checks and the complete deterministic test
+suite on Python 3.11 and 3.14. If they pass, it creates one runtime-only archive
+from the exact checked-out commit, extracts it into a fresh directory, verifies
+its manifest, and starts the extracted CLI with:
+
+```bash
+uv run --locked --no-dev python scripts/specode_loop.py --help
+```
+
+A successful manual run retains `specode-loop-<short-commit>.tar.gz` under the
+stable `release-readiness-archive` artifact label for 14 days. GitHub reports
+the upload digest. The result is provisional: it does not publish a release,
+sign or attest the archive, or deploy anything.
+
 ### Real E2E
 
 Run the optional real E2E harness only when `sbx`, Docker Sandbox auth, network
