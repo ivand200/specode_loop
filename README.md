@@ -224,6 +224,36 @@ uv run --locked pytest
 GitHub Actions does not receive Docker Sandbox or OpenAI credentials and does
 not execute real-request E2E harnesses.
 
+### Dependency maintenance
+
+Dependabot checks the repository root weekly for GitHub Actions and `uv`
+development-tool updates. Minor and patch updates are grouped within each
+ecosystem, major updates remain separate, and routine version-update pull
+requests are capped at three per ecosystem. The Python 3.14 matrix entry is not
+managed by Dependabot; advancing the newest-supported Python version requires a
+deliberate maintenance pull request.
+
+Dependabot pull requests follow the same secretless `pull_request` workflow as
+all other contributions. They receive `Ruff quality`, both Python test jobs,
+and `CI / required`, with no credential-bearing or write-capable workflow and
+no auto-merge or branch-protection bypass.
+
+Before merging an update:
+
+- For an Action update, verify that every changed `uses:` reference remains a
+  full commit SHA with its release version in the same-line comment. Review the
+  release notes for permission, runtime, and workflow-syntax changes.
+- For a `uv` update, verify that the declared development dependencies and
+  `uv.lock` changed together as expected, then require the locked local checks
+  above and the protected CI result to pass.
+- Review major updates independently and merge only after human review; never
+  enable auto-merge for routine or security proposals.
+
+Repository administrators must also enable **Dependabot alerts** and
+**Dependabot security updates** under **Settings > Advanced Security**. Security
+fixes are then proposed promptly instead of waiting for the weekly version
+update schedule, but still require normal CI and human review.
+
 ### Release readiness
 
 The secretless `Release readiness` workflow verifies candidates without
