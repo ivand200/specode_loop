@@ -200,11 +200,31 @@ sandbox cleanup. Raw Codex transcripts are included only when
 
 ## Tests
 
-Run the deterministic regression suite:
+### Pull-request CI
+
+Every pull request, including documentation-only, fork, and Dependabot pull
+requests, runs the secretless `CI` workflow. It reports these checks:
+
+- `Ruff quality` checks formatting and linting on Python 3.11.
+- `Tests (Python 3.11)` and `Tests (Python 3.14)` run the complete deterministic
+  test suite.
+- `CI / required` is the stable merge signal. It succeeds only after Ruff and
+  both Python test jobs succeed; a failure, timeout, or cancellation keeps it
+  non-green.
+
+Run the same locked checks locally:
 
 ```bash
-uv run pytest
+uv sync --locked
+uv run --locked ruff format --check .
+uv run --locked ruff check --output-format=github .
+uv run --locked pytest
 ```
+
+GitHub Actions does not receive Docker Sandbox or OpenAI credentials and does
+not execute real-request E2E harnesses.
+
+### Real E2E
 
 Run the optional real E2E harness only when `sbx`, Docker Sandbox auth, network
 access, and real Codex execution are available:
