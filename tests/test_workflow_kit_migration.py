@@ -3,19 +3,13 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-
 ROOT_DIR = Path(__file__).resolve().parents[1]
 RUNNER = ROOT_DIR / "scripts" / "specode_loop.py"
 ITERATION_MODULE = ROOT_DIR / "scripts" / "specode_loop_iteration.py"
 WORKFLOW_KIT = ROOT_DIR / "sandbox-kits" / "workflow-skills"
 WORKFLOW_KIT_E2E = ROOT_DIR / "tests" / "specode_loop_workflow_kit-e2e.sh"
 WORKFLOW_SKILL = (
-    WORKFLOW_KIT
-    / "files"
-    / "home"
-    / ".agents"
-    / "skills"
-    / "specode-loop-implement"
+    WORKFLOW_KIT / "files" / "home" / ".agents" / "skills" / "specode-loop-implement"
 )
 
 
@@ -27,9 +21,7 @@ def tracked_paths() -> tuple[Path, ...]:
         stdout=subprocess.PIPE,
     )
     return tuple(
-        ROOT_DIR / path.decode("utf-8")
-        for path in result.stdout.split(b"\0")
-        if path
+        ROOT_DIR / path.decode("utf-8") for path in result.stdout.split(b"\0") if path
     )
 
 
@@ -45,10 +37,7 @@ def release_text() -> str:
 
 
 def test_tracked_tree_has_one_service_workflow_skill_source() -> None:
-    tracked = {
-        path.relative_to(ROOT_DIR).as_posix()
-        for path in tracked_paths()
-    }
+    tracked = {path.relative_to(ROOT_DIR).as_posix() for path in tracked_paths()}
 
     canonical_skill = (
         "sandbox-kits/workflow-skills/files/home/.agents/skills/"
@@ -96,21 +85,16 @@ def test_release_surface_contains_complete_workflow_kit_contract() -> None:
     iteration = ITERATION_MODULE.read_text(encoding="utf-8")
     manifest = (WORKFLOW_KIT / "spec.yaml").read_text(encoding="utf-8")
     skill = (WORKFLOW_SKILL / "SKILL.md").read_text(encoding="utf-8")
-    policy = (WORKFLOW_SKILL / "agents" / "openai.yaml").read_text(
-        encoding="utf-8"
-    )
+    policy = (WORKFLOW_SKILL / "agents" / "openai.yaml").read_text(encoding="utf-8")
 
     assert manifest == (
-        'schemaVersion: "1"\n'
-        "kind: mixin\n"
-        "name: specode-loop-workflow-skills\n"
+        'schemaVersion: "1"\nkind: mixin\nname: specode-loop-workflow-skills\n'
     )
     assert "name: specode-loop-implement" in skill
     assert "Take the first eligible undone AFK Plan Task and implement it." in skill
     assert (
         "Mark only that Plan Task and its acceptance criteria complete when all "
-        "tests pass."
-        in skill
+        "tests pass." in skill
     )
     assert policy == "policy:\n  allow_implicit_invocation: true\n"
     assert "Workflow kit validated: {workflow_kit}" in runner

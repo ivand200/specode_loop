@@ -17,7 +17,11 @@ specode_loop.log
 /fixtures/
 /plans
 /prd
-# /tasks
+
+# Repository-local planning and real-E2E evidence
+/tasks/
+/AGENTS.md
+/test_dir/
 
 # OS and editor noise
 .DS_Store

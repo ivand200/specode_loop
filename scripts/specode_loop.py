@@ -25,11 +25,7 @@ ALLOWED_AUTH_MODES = {"oauth", "api-key"}
 API_KEY_ENVIRONMENT_VARIABLES = ("OPENAI_API_KEY", "CODEX_API_KEY")
 WORKFLOW_KIT_REL = Path("sandbox-kits") / "workflow-skills"
 WORKFLOW_SKILL_REL = (
-    Path("files")
-    / "home"
-    / ".agents"
-    / "skills"
-    / "specode-loop-implement"
+    Path("files") / "home" / ".agents" / "skills" / "specode-loop-implement"
 )
 WORKFLOW_KIT_ANCHORS = (
     Path("spec.yaml"),
@@ -202,8 +198,7 @@ def detect_global_openai_auth_mode() -> str:
         result = subprocess.run(
             [sbx, "secret", "ls", "-g", "--service", "openai"],
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             check=False,
             env=sbx_environment(),
@@ -306,14 +301,11 @@ def runner_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def run_sbx_preflight_command(
-    sbx: str, *args: str
-) -> subprocess.CompletedProcess[str]:
+def run_sbx_preflight_command(sbx: str, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sbx, *args],
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
         check=False,
         env=sbx_environment(),
@@ -346,7 +338,9 @@ def fail_invalid_workflow_kit(workflow_kit: Path, problem: str) -> None:
 
 
 def bounded_validator_diagnostic(result: subprocess.CompletedProcess[str]) -> str:
-    diagnostic = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+    diagnostic = (
+        result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+    )
     diagnostic = re.sub(r"\s+", " ", diagnostic)
     if len(diagnostic) > MAX_VALIDATOR_DIAGNOSTIC_CHARS:
         return f"{diagnostic[:MAX_VALIDATOR_DIAGNOSTIC_CHARS]}..."
@@ -358,13 +352,9 @@ def validate_workflow_kit() -> Path:
     try:
         workflow_kit = configured_kit.resolve(strict=True)
     except OSError:
-        fail_invalid_workflow_kit(
-            configured_kit, "required directory is missing"
-        )
+        fail_invalid_workflow_kit(configured_kit, "required directory is missing")
     if not workflow_kit.is_dir():
-        fail_invalid_workflow_kit(
-            configured_kit, "required directory is missing"
-        )
+        fail_invalid_workflow_kit(configured_kit, "required directory is missing")
 
     for anchor in WORKFLOW_KIT_ANCHORS:
         anchor_path = workflow_kit / anchor

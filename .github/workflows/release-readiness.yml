@@ -1,0 +1,205 @@
+name: Release readiness
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      candidate_ref:
+        description: Branch, tag, or commit to verify
+        required: true
+        default: main
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.candidate_ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Ruff quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.candidate_ref || github.ref }}
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.7"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Sync locked development environment
+        run: uv sync --locked
+      - name: Check formatting
+        run: uv run --locked ruff format --check .
+      - name: Lint
+        run: uv run --locked ruff check --output-format=github .
+
+  tests:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.14"
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.candidate_ref || github.ref }}
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.7"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Sync locked development environment
+        run: uv sync --locked
+      - name: Run deterministic test suite
+        run: uv run --locked pytest
+
+  archive:
+    name: Verify release archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs:
+      - quality
+      - tests
+    permissions:
+      contents: read
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.candidate_ref || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tag is reachable from main
+        if: ${{ github.event_name == 'push' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag_commit="$(git rev-parse HEAD)"
+          git show-ref --verify --quiet refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main; then
+            echo "Tag commit $tag_commit is not reachable from origin/main" >&2
+            exit 1
+          fi
+
+          echo "Tag commit $tag_commit is reachable from origin/main"
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.7"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Build and verify runtime archive
+        id: archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          full_sha="$(git rev-parse HEAD)"
+          short_sha="$(git rev-parse --short=12 "$full_sha")"
+          archive_dir="$RUNNER_TEMP/release-readiness-output"
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            archive_name="specode-loop-$GITHUB_REF_NAME.tar.gz"
+            verification_label="tag $GITHUB_REF_NAME at commit $full_sha"
+          else
+            archive_name="specode-loop-$short_sha.tar.gz"
+            verification_label="provisional commit $full_sha"
+          fi
+          archive_path="$archive_dir/$archive_name"
+          verification_dir="$(mktemp -d "$RUNNER_TEMP/release-readiness.XXXXXX")"
+          trap 'rm -rf "$verification_dir"' EXIT
+
+          archive_paths=(
+            .env.example
+            README.md
+            pyproject.toml
+            uv.lock
+            scripts
+            sandbox-kits
+          )
+
+          while IFS= read -r license_path; do
+            archive_paths+=("$license_path")
+          done < <(
+            git ls-files |
+              awk 'index($0, "/") == 0 && ($0 == "LICENSE" || $0 ~ /^LICENSE\./ || $0 == "COPYING" || $0 ~ /^COPYING\./)'
+          )
+
+          mkdir -p "$archive_dir"
+          git archive \
+            --format=tar \
+            --prefix=specode-loop/ \
+            HEAD \
+            -- "${archive_paths[@]}" |
+            gzip -n >"$archive_path"
+
+          git ls-files -- "${archive_paths[@]}" |
+            LC_ALL=C sort |
+            sed 's#^#specode-loop/#' >"$verification_dir/expected-files.txt"
+          tar -tzf "$archive_path" >"$verification_dir/members.txt"
+          sed '/\/$/d' "$verification_dir/members.txt" |
+            LC_ALL=C sort >"$verification_dir/actual-files.txt"
+
+          test -s "$verification_dir/expected-files.txt"
+          test "$(cut -d/ -f1 "$verification_dir/members.txt" | LC_ALL=C sort -u)" = "specode-loop"
+          diff -u "$verification_dir/expected-files.txt" "$verification_dir/actual-files.txt"
+
+          for required_file in .env.example README.md pyproject.toml uv.lock; do
+            grep -Fx "specode-loop/$required_file" "$verification_dir/actual-files.txt"
+          done
+          for required_dir in scripts sandbox-kits; do
+            grep -Eq "^specode-loop/$required_dir/.+" "$verification_dir/actual-files.txt"
+          done
+
+          if grep -Eq '^specode-loop/(tests|examples|docs/adr|tasks|test_dir|\.git)(/|$)|^specode-loop/(CONTEXT\.md|AGENTS\.md)$' "$verification_dir/members.txt"; then
+            echo "Development-only content found in release archive" >&2
+            exit 1
+          fi
+
+          mkdir "$verification_dir/extracted"
+          tar -xzf "$archive_path" -C "$verification_dir/extracted"
+          cd "$verification_dir/extracted/specode-loop"
+          uv run --locked --no-dev python scripts/specode_loop.py --help
+
+          echo "path=$archive_path" >>"$GITHUB_OUTPUT"
+          echo "Verified release archive for $verification_label"
+      - name: Upload verified archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-readiness-archive
+          path: ${{ steps.archive.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

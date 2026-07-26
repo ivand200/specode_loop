@@ -8,5 +8,8 @@ dependencies = []
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "ruff>=0.14.0",
 ]
 
+[tool.ruff]
+target-version = "py311"

@@ -200,43 +200,229 @@ sandbox cleanup. Raw Codex transcripts are included only when
 
 ## Tests
 
-Run the deterministic regression suite:
+### Pull-request CI
+
+Every pull request, including documentation-only, fork, and Dependabot pull
+requests, runs the secretless `CI` workflow. It reports these checks:
+
+- `Ruff quality` checks formatting and linting on Python 3.11.
+- `Tests (Python 3.11)` and `Tests (Python 3.14)` run the complete deterministic
+  test suite.
+- `CI / required` is the stable merge signal. It succeeds only after Ruff and
+  both Python test jobs succeed; a failure, timeout, or cancellation keeps it
+  non-green.
+
+Run the same locked checks locally:
 
 ```bash
-uv run pytest
+uv sync --locked
+uv run --locked ruff format --check .
+uv run --locked ruff check --output-format=github .
+uv run --locked pytest
 ```
 
-Run the optional real E2E harness only when `sbx`, Docker Sandbox auth, network
-access, and real Codex execution are available:
+GitHub Actions does not receive Docker Sandbox or OpenAI credentials and does
+not execute real-request E2E harnesses.
+
+### Dependency maintenance
+
+Dependabot checks the repository root weekly for GitHub Actions and `uv`
+development-tool updates. Minor and patch updates are grouped within each
+ecosystem, major updates remain separate, and routine version-update pull
+requests are capped at three per ecosystem. The Python 3.14 matrix entry is not
+managed by Dependabot; advancing the newest-supported Python version requires a
+deliberate maintenance pull request.
+
+Dependabot pull requests follow the same secretless `pull_request` workflow as
+all other contributions. They receive `Ruff quality`, both Python test jobs,
+and `CI / required`, with no credential-bearing or write-capable workflow and
+no auto-merge or branch-protection bypass.
+
+Before merging an update:
+
+- For an Action update, verify that every changed `uses:` reference remains a
+  full commit SHA with its release version in the same-line comment. Review the
+  release notes for permission, runtime, and workflow-syntax changes.
+- For a `uv` update, verify that the declared development dependencies and
+  `uv.lock` changed together as expected, then require the locked local checks
+  above and the protected CI result to pass.
+- Review major updates independently and merge only after human review; never
+  enable auto-merge for routine or security proposals.
+
+Repository administrators must also enable **Dependabot alerts** and
+**Dependabot security updates** under **Settings > Advanced Security**. Security
+fixes are then proposed promptly instead of waiting for the weekly version
+update schedule, but still require normal CI and human review.
+
+### Release readiness
+
+The secretless `Release readiness` workflow verifies candidates without
+publishing them. For a provisional manual check, choose **Release readiness**
+in GitHub Actions, select **Run workflow**, and enter any candidate branch, tag,
+or full commit SHA in `candidate_ref`.
+
+The workflow repeats locked Ruff checks and the complete deterministic test
+suite on Python 3.11 and 3.14. If they pass, it creates one runtime-only archive
+from the exact checked-out commit, extracts it into a fresh directory, verifies
+its manifest, and starts the extracted CLI with:
+
+```bash
+uv run --locked --no-dev python scripts/specode_loop.py --help
+```
+
+A successful manual run retains `specode-loop-<short-commit>.tar.gz` under the
+stable `release-readiness-archive` artifact label for 14 days. GitHub reports
+the upload digest. The result is provisional regardless of the selected ref.
+
+Pushing a tag whose name starts with `v` also starts the workflow. Before
+building, the workflow fetches the repository history and proves that the
+tagged commit is reachable from `origin/main`. A qualifying tag run retains
+`specode-loop-<tag>.tar.gz` under the same artifact label. A `v*` tag outside
+`main` fails before archive construction, and tags that do not start with `v`
+do not trigger this workflow.
+
+Both manual and tag artifacts are retained for review only. The workflow does
+not publish a release, compare the tag with the static project version, sign or
+attest the archive, or deploy anything.
+
+### Real E2E
+
+Real Docker Sandbox/Codex E2E is a trusted local-machine activity. It is not
+part of deterministic pull-request CI or the credential-free release-readiness
+workflow, and GitHub never receives its credentials, paid requests, temporary
+Target Projects, logs, or receipts.
+
+#### Exploratory local runs
+
+Developers may run any individual harness from any branch or working tree when
+`sbx`, Docker Sandbox authentication, network access, and real Codex execution
+are available. These runs provide exploratory feedback; they do not qualify a
+commit for a release tag.
+
+Run the focused one-request authentication harness against Docker Sandbox's
+globally configured OpenAI credential:
 
 ```bash
 unset OPENAI_API_KEY CODEX_API_KEY
-bash tests/specode_loop_python-e2e.sh
+bash tests/specode_loop_auth-e2e.sh
 ```
 
-Run the focused two-project Workflow Kit E2E to verify real service-skill
-discovery, deliberate project override precedence, Target Project invariance,
-and sandbox removal:
+Run the two-request Workflow Kit harness to verify real service-skill discovery,
+deliberate project override precedence, Target Project invariance, and sandbox
+removal:
 
 ```bash
 unset OPENAI_API_KEY CODEX_API_KEY
 bash tests/specode_loop_workflow_kit-e2e.sh
 ```
 
-Run a focused one-request authentication E2E against the globally configured
-Docker Sandbox OpenAI credential:
+Run the complete example-project harness, which can use up to five requests:
 
 ```bash
-# OAuth (default)
-bash tests/specode_loop_auth-e2e.sh
+unset OPENAI_API_KEY CODEX_API_KEY
+bash tests/specode_loop_python-e2e.sh
+```
 
-# Deliberate API-key mode
+OAuth is the default and the only mode accepted for release qualification.
+Deliberate API-key coverage is optional when authentication behavior changes,
+but it cannot replace the qualifying OAuth run:
+
+```bash
 SPECODE_LOOP_AUTH_E2E_MODE=api-key \
   bash tests/specode_loop_auth-e2e.sh
 ```
 
+#### Release-qualifying local run
+
+Before creating a version tag, qualify the exact commit intended for that tag.
+Start from the repository root, check out the commit, and require a clean
+working tree. Record the full SHA for the receipt and stop if `git status`
+prints anything:
+
+```bash
+git switch --detach INTENDED_COMMIT
+git status --short
+git rev-parse HEAD
+```
+
+Run the credential-free contract first. Every command must pass against that
+same clean commit:
+
+```bash
+uv sync --locked
+uv run --locked ruff format --check .
+uv run --locked ruff check --output-format=github .
+uv run --locked pytest
+```
+
+Then verify the local prerequisites: `sbx` 0.37.0 or newer is operational,
+Docker Sandbox networking can reach the required services, and the global
+`openai` secret contains a working OAuth credential. Do not print or copy the
+credential into the receipt.
+
+```bash
+sbx --version
+sbx secret ls -g --service openai
+sbx policy check network api.openai.com
+```
+
+Choose and record one model for all three harnesses. Remove inherited API-key
+variables, explicitly select OAuth, and run the harnesses in cheapest-first
+order:
+
+```bash
+export SPECODE_LOOP_AUTH_E2E_MODEL=gpt-5.6-sol
+export SPECODE_LOOP_WORKFLOW_KIT_E2E_MODEL=gpt-5.6-sol
+export SPECODE_LOOP_PYTHON_E2E_MODEL=gpt-5.6-sol
+unset OPENAI_API_KEY CODEX_API_KEY
+unset SPECODE_LOOP_AUTH_E2E_MODE SPECODE_LOOP_E2E_AUTH
+unset SPECODE_LOOP_WORKFLOW_KIT_E2E_AUTH SPECODE_LOOP_PYTHON_E2E_AUTH
+bash tests/specode_loop_auth-e2e.sh
+bash tests/specode_loop_workflow_kit-e2e.sh
+bash tests/specode_loop_python-e2e.sh
+```
+
+The complete qualifying run plans at most eight real requests: one for
+authentication, two for the Workflow Kit cases, and up to five for the example
+project. The harnesses fail fast and must not be wrapped in automatic retries.
+Stop after any failure, classify it, and record the requests already used.
+
+- A **product failure** is an incorrect exit, failed behavioral assertion,
+  missing sentinel, incorrect project state, or incorrect cleanup while the
+  prerequisites are healthy. Fix the product and restart qualification on the
+  corrected clean commit.
+- An **infrastructure failure** is unavailable `sbx` or Docker Sandbox,
+  missing or expired OAuth, provider/network unavailability, or rate limiting
+  before product behavior can be evaluated. After remediation, the operator
+  may manually rerun only the failed harness.
+
+Both failure classes block qualification. A targeted infrastructure rerun does
+not erase the original result: record both attempts. All three harnesses must
+ultimately pass with OAuth against the same clean commit before it is tagged.
+
+#### Receipt and cleanup
+
+Keep one minimal Markdown or text receipt under
+`test_dir/real-e2e-evidence/` for 30 days. This directory is ignored and must
+never be committed or uploaded. Record only:
+
+- exact commit SHA and clean-working-tree confirmation;
+- UTC start and end times;
+- `sbx` version, selected model, and `oauth` mode;
+- each command and pass/fail result;
+- planned and used real-request counts; and
+- any failure classification, remediation, and targeted-rerun result.
+
+Never put OAuth material, API keys, raw transcripts, verbose logs, or temporary
+Target Projects in routine evidence. A failed harness can leave a temporary
+directory for diagnosis; delete the exact directory it reports after the issue
+is understood. Remove any other diagnostic data before the receipt expires.
+The tag-triggered release-readiness workflow separately verifies the
+credential-free archive; GitHub does not ingest or validate this local receipt.
+
 ## More Detail
 
 Architecture decisions live in `docs/adr/`. Root-level local planning files,
-logs, secrets, `.codex/`, generated fixtures, and `/tasks` are intentionally
-kept out of version control for local development.
+logs, secrets, `.codex/`, generated fixtures, `/tasks`, `/AGENTS.md`, and
+`/test_dir` are intentionally kept out of version control for local
+development.
