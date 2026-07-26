@@ -21,7 +21,7 @@ Plan Task, mark only that Plan Task complete, and print one success sentinel:
 
 - Python 3.11+
 - `uv`
-- Docker Sandbox CLI (`sbx`)
+- Docker Sandbox CLI (`sbx`) 0.37.0 or newer
 - Codex auth available to Docker Sandbox
 
 Check the sandbox CLI:
@@ -143,7 +143,7 @@ Options:
 | --- | --- | --- |
 | `--prd PATH` | `prd.md` | PRD document path inside the Target Project |
 | `--plan PATH` | `plan.md` | Plan document path inside the Target Project |
-| `--max-iterations N` | `10` | Maximum sandbox iterations |
+| `--max-iterations N` | `12` | Maximum sandbox iterations |
 | `--auth MODE` | `oauth` | OpenAI auth mode: `oauth` or explicit `api-key` opt-in |
 | `--model MODEL` | `gpt-5.6-sol` | Codex model passed to `codex exec -m` |
 | `--effort EFFORT` | `medium` | Reasoning effort: `minimal`, `low`, `medium`, `high`, `xhigh` |
@@ -160,36 +160,42 @@ uv run python scripts/specode_loop.py /path/to/project \
 Absolute `--prd` and `--plan` paths are accepted only when they resolve inside
 the Target Project.
 
-## Workflow Skills
+## Workflow Kit
 
-Specode Loop first looks for a host global `do-work` skill at:
+Specode Loop ships its Service Implementation Skill in the checked-in Docker
+Sandbox mixin at `sandbox-kits/workflow-skills`. The complete
+`specode-loop-implement` skill inside that kit is the service-owned source of
+truth.
 
-- `$CODEX_HOME/skills/do-work`
-- `~/.codex/skills/do-work`
+Before creating the project log or any sandbox, the runner validates the kit's
+required files, requires Docker Sandbox 0.37.0 or newer, probes support for
+`--no-share-skills`, and runs `sbx kit validate`. Successful preflight prints
+and logs:
 
-When found, the runner copies it into the Target Project as
-`.agents/skills/do-work` so sandboxed Codex can use it.
+```text
+Workflow kit validated: <absolute-resolved-kit-path>
+```
 
-The repository also ships a fallback workflow skill at
-`.agents/skills/specode-do-work`. Before each sandbox run, the runner copies
-that directory into the Target Project as `.agents/skills/specode-do-work`.
-Both repository-owned directories are complete copies of the global
-`~/.codex/skills/do-work` source of truth.
+Every Sandbox Iteration creates a Codex sandbox with the validated kit and
+Docker's global shared-skill store disabled. Its prompt explicitly says:
 
-The sandbox prompt explicitly invokes `$do-work` first, then falls back to the
-same `$do-work` manifest in the project-local `.agents/skills/specode-do-work`
-directory when the preferred copy is unavailable. It also identifies the PRD
-document as `$to-spec` output and the plan document as `$to-tickets` output. The
-bundled `examples/basic` Target Project follows those Planning Document formats
-for real E2E coverage.
+```text
+Use the `$specode-loop-implement` skill to execute this iteration.
+```
+
+Provisioning never creates, replaces, restores, or deletes `.agents` content
+in the Target Project. Project skills remain visible, including an ordinary
+project `$do-work` skill. If a Target Project deliberately defines its own
+`specode-loop-implement` skill, normal project-level Codex precedence applies;
+Specode Loop does not scan for or reject that declaration.
 
 ## Logs
 
 Specode Loop writes `specode_loop.log` in the Target Project.
 
-Default logs include preflight details, selected Planning Documents, synced
-workflow skills, model and reasoning effort, iteration status, sentinel
-detection, and sandbox cleanup. Raw Codex transcripts are included only when
+Default logs include the validated Workflow Kit, selected Planning Documents,
+model and reasoning effort, iteration status, Success Sentinel detection, and
+sandbox cleanup. Raw Codex transcripts are included only when
 `SPECODE_LOOP_VERBOSE=1`.
 
 ## Tests
@@ -206,6 +212,15 @@ access, and real Codex execution are available:
 ```bash
 unset OPENAI_API_KEY CODEX_API_KEY
 bash tests/specode_loop_python-e2e.sh
+```
+
+Run the focused two-project Workflow Kit E2E to verify real service-skill
+discovery, deliberate project override precedence, Target Project invariance,
+and sandbox removal:
+
+```bash
+unset OPENAI_API_KEY CODEX_API_KEY
+bash tests/specode_loop_workflow_kit-e2e.sh
 ```
 
 Run a focused one-request authentication E2E against the globally configured

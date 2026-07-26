@@ -156,13 +156,13 @@ main() {
   assert_project_command_exact "Specode Loop request/response example verified." "$PROJECT_DIR" ./verify.sh
   assert_count "4" "$(count_file_matches '^## \[x\] [0-9]' "$PROJECT_DIR/plan.md")" "completed ticket count"
   assert_count "0" "$(count_file_matches '^## \[ \] [0-9]' "$PROJECT_DIR/plan.md")" "remaining unchecked ticket count"
-  [[ -d "$PROJECT_DIR/.agents/skills/specode-do-work" ]] || fail "project-local specode-do-work skill was not copied"
-  assert_file_contains "$PROJECT_DIR/.agents/skills/specode-do-work/SKILL.md" "name: do-work"
-  assert_path_missing "$PROJECT_DIR/.codex/skills/do-work"
-  assert_file_contains "$PROJECT_DIR/specode_loop.log" "Bundled workflow skill synced: specode-do-work:$PROJECT_DIR/.agents/skills/specode-do-work"
+  assert_path_missing "$PROJECT_DIR/.agents/skills/specode-loop-implement"
+  assert_path_missing "$PROJECT_DIR/.codex/skills/specode-loop-implement"
+  assert_file_contains "$PROJECT_DIR/specode_loop.log" "Workflow kit validated: $ROOT_DIR/sandbox-kits/workflow-skills"
   assert_count "4" "$(count_file_matches "TASK DONE sentinel detected" "$PROJECT_DIR/specode_loop.log")" "TASK DONE sentinel count"
   assert_file_contains "$PROJECT_DIR/specode_loop.log" "ALL TASKS DONE sentinel detected"
   assert_file_contains "$STDOUT_FILE" "Specode Loop preflight passed."
+  assert_file_contains "$STDOUT_FILE" "Workflow kit validated: $ROOT_DIR/sandbox-kits/workflow-skills"
   assert_file_contains "$STDOUT_FILE" "ALL TASKS DONE sentinel detected"
 
   if keep_artifacts; then

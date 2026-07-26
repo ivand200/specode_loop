@@ -10,8 +10,15 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parents[1]
 RUNNER = ROOT_DIR / "scripts" / "specode_loop.py"
 ITERATION_MODULE = ROOT_DIR / "scripts" / "specode_loop_iteration.py"
-PREFERRED_SKILL = ROOT_DIR / ".agents" / "skills" / "do-work"
-SPECODE_SKILL = ROOT_DIR / ".agents" / "skills" / "specode-do-work"
+WORKFLOW_KIT = ROOT_DIR / "sandbox-kits" / "workflow-skills"
+WORKFLOW_SKILL = (
+    WORKFLOW_KIT
+    / "files"
+    / "home"
+    / ".agents"
+    / "skills"
+    / "specode-loop-implement"
+)
 AUTH_E2E = ROOT_DIR / "tests" / "specode_loop_auth-e2e.sh"
 
 
@@ -61,6 +68,39 @@ def make_project(tmp_path: Path, name: str = "project") -> Path:
     return project
 
 
+def make_isolated_runner(tmp_path: Path) -> tuple[Path, Path]:
+    isolated_root = tmp_path / "isolated-runner"
+    scripts = isolated_root / "scripts"
+    scripts.mkdir(parents=True)
+    runner = scripts / "specode_loop.py"
+    shutil.copyfile(RUNNER, runner)
+    shutil.copyfile(ITERATION_MODULE, scripts / "specode_loop_iteration.py")
+
+    kit = isolated_root / "sandbox-kits" / "workflow-skills"
+    skill = (
+        kit
+        / "files"
+        / "home"
+        / ".agents"
+        / "skills"
+        / "specode-loop-implement"
+    )
+    (skill / "agents").mkdir(parents=True)
+    (kit / "spec.yaml").write_text(
+        'schemaVersion: "1"\nkind: mixin\nname: specode-loop-workflow-skills\n',
+        encoding="utf-8",
+    )
+    (skill / "SKILL.md").write_text(
+        "---\nname: specode-loop-implement\ndescription: test\n---\n",
+        encoding="utf-8",
+    )
+    (skill / "agents" / "openai.yaml").write_text(
+        "policy:\n  allow_implicit_invocation: true\n",
+        encoding="utf-8",
+    )
+    return runner, kit
+
+
 def make_global_do_work_skill(tmp_path: Path) -> Path:
     codex_home = tmp_path / "codex-home"
     skill_dir = codex_home / "skills" / "do-work"
@@ -92,6 +132,22 @@ def install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
         "  printf 'auth-env|OPENAI_API_KEY=%s|CODEX_API_KEY=%s\\n' \"${OPENAI_API_KEY:-unset}\" \"${CODEX_API_KEY:-unset}\" >>\"$FAKE_SBX_CALLS\"\n"
         "fi\n"
         "case \"$cmd\" in\n"
+        "  version)\n"
+        "    printf 'version|%s\\n' \"$*\" >>\"$FAKE_SBX_CALLS\"\n"
+        "    if [[ -f \"$FAKE_SBX_DIR/version.stdout\" ]]; then cat \"$FAKE_SBX_DIR/version.stdout\"; else printf 'v0.37.0 (test build)\\n'; fi\n"
+        "    if [[ -f \"$FAKE_SBX_DIR/version.stderr\" ]]; then cat \"$FAKE_SBX_DIR/version.stderr\" >&2; fi\n"
+        "    if [[ -f \"$FAKE_SBX_DIR/version.remove-sbx\" ]]; then rm -- \"$0\"; fi\n"
+        "    if [[ -f \"$FAKE_SBX_DIR/version.status\" ]]; then exit \"$(cat \"$FAKE_SBX_DIR/version.status\")\"; fi\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "  kit)\n"
+        "    printf 'kit|%s\\n' \"$*\" >>\"$FAKE_SBX_CALLS\"\n"
+        "    if [[ \"${1:-}\" != \"validate\" || -z \"${2:-}\" ]]; then exit 127; fi\n"
+        "    if [[ -f \"$FAKE_SBX_DIR/validator.stdout\" ]]; then cat \"$FAKE_SBX_DIR/validator.stdout\"; else printf 'VALID: %s (directory)\\n' \"$2\"; fi\n"
+        "    if [[ -f \"$FAKE_SBX_DIR/validator.stderr\" ]]; then cat \"$FAKE_SBX_DIR/validator.stderr\" >&2; fi\n"
+        "    if [[ -f \"$FAKE_SBX_DIR/validator.status\" ]]; then exit \"$(cat \"$FAKE_SBX_DIR/validator.status\")\"; fi\n"
+        "    exit 0\n"
+        "    ;;\n"
         "  secret)\n"
         "    if [[ \"${1:-}\" != \"ls\" ]]; then\n"
         "      printf 'unexpected fake sbx secret command: %s\\n' \"$*\" >&2\n"
@@ -105,15 +161,29 @@ def install_fake_sbx(tmp_path: Path) -> tuple[str, Path]:
         "    exit 0\n"
         "    ;;\n"
         "  create)\n"
-        "    name=\"\"\n"
-        "    if [[ \"${1:-}\" == \"--name\" ]]; then\n"
-        "      name=\"${2:-}\"\n"
-        "      shift 2\n"
+        "    if [[ \"${1:-}\" == \"--no-share-skills\" && \"${2:-}\" == \"--help\" ]]; then\n"
+        "      printf 'create|%s\\n' \"$*\" >>\"$FAKE_SBX_CALLS\"\n"
+        "      if [[ -f \"$FAKE_SBX_DIR/parser.stderr\" ]]; then cat \"$FAKE_SBX_DIR/parser.stderr\" >&2; fi\n"
+        "      if [[ -f \"$FAKE_SBX_DIR/parser.remove-sbx\" ]]; then rm -- \"$0\"; fi\n"
+        "      if [[ -f \"$FAKE_SBX_DIR/parser.status\" ]]; then exit \"$(cat \"$FAKE_SBX_DIR/parser.status\")\"; fi\n"
+        "      exit 0\n"
         "    fi\n"
-        "    printf 'create|%s|%s\\n' \"$name\" \"$*\" >>\"$FAKE_SBX_CALLS\"\n"
-        "    if [[ \"${1:-}\" == \"codex\" && -n \"${2:-}\" ]]; then\n"
+        "    original_args=\"$*\"\n"
+        "    name=\"\"\n"
+        "    project=\"\"\n"
+        "    while [[ $# -gt 0 ]]; do\n"
+        "      case \"$1\" in\n"
+        "        --no-share-skills) shift ;;\n"
+        "        --name) name=\"${2:-}\"; shift 2 ;;\n"
+        "        --kit) shift 2 ;;\n"
+        "        codex) project=\"${2:-}\"; break ;;\n"
+        "        *) shift ;;\n"
+        "      esac\n"
+        "    done\n"
+        "    printf 'create|%s|%s\\n' \"$name\" \"$original_args\" >>\"$FAKE_SBX_CALLS\"\n"
+        "    if [[ -n \"$project\" ]]; then\n"
         "      for skill_name in do-work specode-do-work; do\n"
-        "        skill_path=\"$2/.agents/skills/$skill_name/SKILL.md\"\n"
+        "        skill_path=\"$project/.agents/skills/$skill_name/SKILL.md\"\n"
         "        if [[ -f \"$skill_path\" ]]; then\n"
         "          printf 'skill-before-exec|%s|present\\n' \"$skill_path\" >>\"$FAKE_SBX_CALLS\"\n"
         "        else\n"
@@ -195,7 +265,16 @@ def write_interrupt(tmp_path: Path, run_number: int, output: str) -> None:
 
 
 def assert_sandbox_not_called(calls_log: Path) -> None:
-    assert not calls_log.exists(), calls_log.read_text(encoding="utf-8") if calls_log.exists() else ""
+    if not calls_log.exists():
+        return
+    calls = calls_log.read_text(encoding="utf-8").splitlines()
+    unexpected = [
+        call
+        for call in calls
+        if call.startswith("exec|")
+        or (call.startswith("create|") and call != "create|--no-share-skills --help")
+    ]
+    assert unexpected == []
 
 
 def assert_bundled_skill_not_synced(project: Path) -> None:
@@ -210,6 +289,18 @@ def assert_sandbox_called(calls_log: Path) -> str:
 def assert_no_temp_artifacts(tmp_path: Path, project: Path) -> None:
     assert not list(tmp_path.glob("specode_loop.*"))
     assert not list(project.glob(".specode_loop-last-message.*"))
+
+
+def target_project_agent_content(project: Path) -> dict[str, bytes | None]:
+    agents = project / ".agents"
+    if not agents.exists():
+        return {}
+    return {
+        path.relative_to(agents).as_posix(): (
+            None if path.is_dir() else path.read_bytes()
+        )
+        for path in agents.rglob("*")
+    }
 
 
 def test_help_describes_python_command_contract() -> None:
@@ -242,9 +333,27 @@ def test_runner_maps_preflight_values_to_one_deep_iteration_call_per_position(
     isolated_scripts.mkdir(parents=True)
     isolated_runner = isolated_scripts / "specode_loop.py"
     shutil.copyfile(RUNNER, isolated_runner)
-    shutil.copytree(
-        SPECODE_SKILL,
-        isolated_root / ".agents" / "skills" / "specode-do-work",
+    workflow_kit = isolated_root / "sandbox-kits" / "workflow-skills"
+    workflow_skill = (
+        workflow_kit
+        / "files"
+        / "home"
+        / ".agents"
+        / "skills"
+        / "specode-loop-implement"
+    )
+    (workflow_skill / "agents").mkdir(parents=True)
+    (workflow_kit / "spec.yaml").write_text(
+        'schemaVersion: "1"\nkind: mixin\nname: specode-loop-workflow-skills\n',
+        encoding="utf-8",
+    )
+    (workflow_skill / "SKILL.md").write_text(
+        "---\nname: specode-loop-implement\ndescription: test\n---\n",
+        encoding="utf-8",
+    )
+    (workflow_skill / "agents" / "openai.yaml").write_text(
+        "policy:\n  allow_implicit_invocation: true\n",
+        encoding="utf-8",
     )
     (isolated_scripts / "specode_loop_iteration.py").write_text(
         "from dataclasses import asdict, dataclass\n"
@@ -256,6 +365,7 @@ def test_runner_maps_preflight_values_to_one_deep_iteration_call_per_position(
         "@dataclass(frozen=True)\n"
         "class SandboxIterationRequest:\n"
         "    target_project: Path\n"
+        "    workflow_kit: Path\n"
         "    prd_role_path: Path\n"
         "    plan_role_path: Path\n"
         "    iteration: int\n"
@@ -298,6 +408,7 @@ def test_runner_maps_preflight_values_to_one_deep_iteration_call_per_position(
     assert requests == [
         {
             "target_project": str(project.resolve()),
+            "workflow_kit": str(workflow_kit.resolve()),
             "prd_role_path": "prd.md",
             "plan_role_path": "plan.md",
             "iteration": 1,
@@ -309,6 +420,7 @@ def test_runner_maps_preflight_values_to_one_deep_iteration_call_per_position(
         },
         {
             "target_project": str(project.resolve()),
+            "workflow_kit": str(workflow_kit.resolve()),
             "prd_role_path": "prd.md",
             "plan_role_path": "plan.md",
             "iteration": 2,
@@ -320,7 +432,17 @@ def test_runner_maps_preflight_values_to_one_deep_iteration_call_per_position(
         },
     ]
     calls = calls_log.read_text(encoding="utf-8") if calls_log.exists() else ""
-    assert "create|" not in calls
+    expected_evidence = f"Workflow kit validated: {workflow_kit.resolve()}"
+    assert result.stdout.count(expected_evidence) == 1
+    assert (project / "specode_loop.log").read_text(encoding="utf-8").count(
+        expected_evidence
+    ) == 1
+    assert calls.splitlines()[:3] == [
+        "version|",
+        "create|--no-share-skills --help",
+        f"kit|validate {workflow_kit.resolve()}",
+    ]
+    assert calls.count("create|") == 1
     assert "exec|" not in calls
 
 
@@ -382,10 +504,14 @@ def test_option_parsing_and_valid_run_execute_sandbox(tmp_path: Path, monkeypatc
     assert "Reasoning effort: medium" in result.stdout
     calls = assert_sandbox_called(calls_log)
     assert "create|specode-loop-project-" in calls
-    assert f"codex {project}" in calls
-    assert f"exec|specode-loop-project-" in calls
+    assert "--no-share-skills --name specode-loop-project-" in calls
+    assert f"--kit {WORKFLOW_KIT} codex {project}" in calls
+    assert "exec|specode-loop-project-" in calls
     assert f"codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -C {project}" in calls
     log = (project / "specode_loop.log").read_text(encoding="utf-8")
+    evidence = f"Workflow kit validated: {WORKFLOW_KIT}"
+    assert result.stdout.count(evidence) == 1
+    assert log.count(evidence) == 1
     assert f"PRD document: {project / 'prd.md'}" in log
     assert f"Plan document: {project / 'plan.md'}" in log
     assert "ALL TASKS DONE sentinel detected" in log
@@ -408,6 +534,12 @@ def test_oauth_is_default_and_rejects_stored_api_key_before_sandbox_execution(
     assert "--auth api-key" in result.stderr
     assert_bundled_skill_not_synced(project)
     assert_sandbox_not_called(calls_log)
+    workflow_kit_probes = (
+        calls_log.read_text(encoding="utf-8").splitlines()
+        if calls_log.exists()
+        else []
+    )
+    assert workflow_kit_probes == []
 
 
 def test_api_key_auth_requires_explicit_opt_in(tmp_path: Path, monkeypatch) -> None:
@@ -607,62 +739,87 @@ def test_max_iteration_cap_fails_without_no_sentinel_diagnostics(tmp_path: Path,
     assert_no_temp_artifacts(tmp_path, project)
 
 
-def test_bundled_skill_is_copied_and_owned_target_is_overwritten(tmp_path: Path, monkeypatch) -> None:
+def test_successful_provisioning_preserves_skills_and_accepts_same_name_override(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = make_project(tmp_path)
     path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
     write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
-    copied_skill = project / ".agents" / "skills" / "specode-do-work" / "SKILL.md"
-    copied_reference = project / ".agents" / "skills" / "specode-do-work" / "references" / "workflow.txt"
-    stale_file = project / ".agents" / "skills" / "specode-do-work" / "stale-dir" / "old.txt"
+    project_do_work = project / ".agents" / "skills" / "do-work" / "SKILL.md"
+    project_service_skill = (
+        project / ".agents" / "skills" / "specode-loop-implement" / "SKILL.md"
+    )
     unrelated_skill = project / ".agents" / "skills" / "project-owned" / "SKILL.md"
     unrelated_agent_config = project / ".agents" / "README.md"
 
-    copied_skill.parent.mkdir(parents=True)
-    copied_skill.write_text("stale local skill\n", encoding="utf-8")
-    stale_file.parent.mkdir(parents=True)
-    stale_file.write_text("stale nested asset\n", encoding="utf-8")
+    project_do_work.parent.mkdir(parents=True)
+    project_do_work.write_text("project do-work\n", encoding="utf-8")
+    project_service_skill.parent.mkdir(parents=True)
+    project_service_skill.write_text("project service override\n", encoding="utf-8")
     unrelated_skill.parent.mkdir(parents=True)
     unrelated_skill.write_text("project-owned skill\n", encoding="utf-8")
     unrelated_agent_config.write_text("project-owned agent config\n", encoding="utf-8")
+    before = target_project_agent_content(project)
 
     result = run_loop(project, path=path)
 
     assert result.returncode == 0
-    assert "Bundled workflow skill synced: specode-do-work:" in result.stdout
-    copied_skill_text = copied_skill.read_text(encoding="utf-8")
-    assert copied_skill_text == SPECODE_SKILL.joinpath("SKILL.md").read_text(
+    assert target_project_agent_content(project) == before
+    calls = assert_sandbox_called(calls_log)
+    assert f"--kit {WORKFLOW_KIT} codex {project}" in calls
+    assert f"skill-before-exec|{project_do_work}|present" in calls
+    assert "Use the `$specode-loop-implement` skill to execute this iteration." in calls
+    assert "Use the `$do-work` skill" not in calls
+
+
+def test_failed_preflight_leaves_complete_target_project_agent_content_unchanged(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path, "preflight-ownership")
+    project_do_work = project / ".agents" / "skills" / "do-work" / "SKILL.md"
+    project_service_skill = (
+        project / ".agents" / "skills" / "specode-loop-implement" / "SKILL.md"
+    )
+    unrelated_config = project / ".agents" / "project-policy.md"
+    project_do_work.parent.mkdir(parents=True)
+    project_do_work.write_text("ordinary project do-work\n", encoding="utf-8")
+    project_service_skill.parent.mkdir(parents=True)
+    project_service_skill.write_text("deliberate project override\n", encoding="utf-8")
+    unrelated_config.write_text("project-owned policy\n", encoding="utf-8")
+    before = target_project_agent_content(project)
+    path, calls_log = install_fake_sbx(tmp_path)
+    monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
+    monkeypatch.setenv("FAKE_SBX_DIR", str(tmp_path))
+    (tmp_path / "parser.status").write_text("2\n", encoding="utf-8")
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 1
+    assert "Docker Sandbox compatibility failure: create parser check" in result.stderr
+    assert target_project_agent_content(project) == before
+    assert not (project / "specode_loop.log").exists()
+    assert_sandbox_not_called(calls_log)
+
+
+def test_canonical_workflow_kit_owns_the_complete_service_skill() -> None:
+    assert (WORKFLOW_KIT / "spec.yaml").read_text(encoding="utf-8") == (
+        'schemaVersion: "1"\nkind: mixin\nname: specode-loop-workflow-skills\n'
+    )
+    skill_manifest = (WORKFLOW_SKILL / "SKILL.md").read_text(encoding="utf-8")
+    policy = (WORKFLOW_SKILL / "agents" / "openai.yaml").read_text(
         encoding="utf-8"
     )
-    assert "name: do-work" in copied_skill_text
-    assert "stale local skill" not in copied_skill_text
-    assert not copied_reference.exists()
-    assert not stale_file.exists()
-    assert unrelated_skill.read_text(encoding="utf-8") == "project-owned skill\n"
-    assert unrelated_agent_config.read_text(encoding="utf-8") == "project-owned agent config\n"
-    assert f"skill-before-exec|{copied_skill}|present" in assert_sandbox_called(calls_log)
+    assert "name: specode-loop-implement" in skill_manifest
+    assert "allow_implicit_invocation: true" in policy
+    assert not (
+        ROOT_DIR / ".agents" / "skills" / "do-work" / "SKILL.md"
+    ).exists()
+    assert not (
+        ROOT_DIR / ".agents" / "skills" / "specode-do-work" / "SKILL.md"
+    ).exists()
 
 
-def test_runner_owned_do_work_copies_match_the_preferred_source() -> None:
-    preferred_files = {
-        path.relative_to(PREFERRED_SKILL): path.read_bytes()
-        for path in PREFERRED_SKILL.rglob("*")
-        if path.is_file()
-    }
-    fallback_files = {
-        path.relative_to(SPECODE_SKILL): path.read_bytes()
-        for path in SPECODE_SKILL.rglob("*")
-        if path.is_file()
-    }
-
-    assert preferred_files
-    assert fallback_files == preferred_files
-    assert Path("agents/openai.yaml") in preferred_files
-    assert b"allow_implicit_invocation: false" in preferred_files[
-        Path("agents/openai.yaml")
-    ]
-
-
-def test_global_do_work_skill_is_copied_into_target_when_available(tmp_path: Path, monkeypatch) -> None:
+def test_host_global_do_work_skill_is_ignored(tmp_path: Path, monkeypatch) -> None:
     project = make_project(tmp_path, "with-global-do-work")
     codex_home = make_global_do_work_skill(tmp_path)
     path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
@@ -670,22 +827,15 @@ def test_global_do_work_skill_is_copied_into_target_when_available(tmp_path: Pat
 
     result = run_loop(project, path=path, codex_home=codex_home)
 
-    copied_skill = project / ".agents" / "skills" / "do-work" / "SKILL.md"
-    copied_notes = project / ".agents" / "skills" / "do-work" / "notes.txt"
     assert result.returncode == 0
-    assert f"Global workflow skill synced: do-work:{project / '.agents' / 'skills' / 'do-work'}" in result.stdout
-    assert "source:" in result.stdout
-    copied_skill_text = copied_skill.read_text(encoding="utf-8")
-    assert copied_skill_text == (
-        codex_home / "skills" / "do-work" / "SKILL.md"
-    ).read_text(encoding="utf-8")
-    assert "name: do-work" in copied_skill_text
-    assert "## Specode Loop Runner Contract" not in copied_skill_text
-    assert copied_notes.read_text(encoding="utf-8") == "copied from global skill\n"
-    assert f"skill-before-exec|{copied_skill}|present" in assert_sandbox_called(calls_log)
+    assert not (project / ".agents").exists()
+    assert "workflow skill synced" not in result.stdout.lower()
+    assert f"--kit {WORKFLOW_KIT} codex {project}" in assert_sandbox_called(calls_log)
 
 
-def test_missing_bundled_skill_source_fails_before_sandbox_execution(tmp_path: Path, monkeypatch) -> None:
+def test_missing_canonical_workflow_kit_fails_before_sandbox_execution(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = make_project(tmp_path)
     path, calls_log = install_fake_sbx(tmp_path)
     monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
@@ -699,10 +849,201 @@ def test_missing_bundled_skill_source_fails_before_sandbox_execution(tmp_path: P
     result = run_loop(project, path=path, runner=isolated_runner)
 
     assert result.returncode == 1
-    assert "Error: bundled workflow skill directory is missing:" in result.stderr
-    assert "isolated-runner/.agents/skills/specode-do-work" in result.stderr
+    assert "Error: invalid Workflow Kit: required directory is missing:" in result.stderr
+    assert "isolated-runner/sandbox-kits/workflow-skills" in result.stderr
+    assert "restore or reinstall the checked-in kit and retry" in result.stderr
     assert "Specode Loop preflight passed." not in result.stdout
+    assert not (project / "specode_loop.log").exists()
     assert_sandbox_not_called(calls_log)
+
+
+def test_missing_workflow_kit_anchor_is_an_actionable_invalid_kit_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    runner, kit = make_isolated_runner(tmp_path)
+    missing_anchor = (
+        kit
+        / "files"
+        / "home"
+        / ".agents"
+        / "skills"
+        / "specode-loop-implement"
+        / "agents"
+        / "openai.yaml"
+    )
+    missing_anchor.unlink()
+    path, calls_log = install_fake_sbx(tmp_path)
+    monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))
+    monkeypatch.setenv("FAKE_SBX_DIR", str(tmp_path))
+
+    result = run_loop(project, path=path, runner=runner)
+
+    assert result.returncode == 1
+    assert "Error: invalid Workflow Kit:" in result.stderr
+    assert str(kit.resolve()) in result.stderr
+    assert str(missing_anchor) in result.stderr
+    assert "restore or reinstall the checked-in kit and retry" in result.stderr
+    assert not (project / "specode_loop.log").exists()
+    assert not (project / ".agents").exists()
+    assert not calls_log.exists()
+
+
+def test_supported_version_and_successful_warning_probes_are_accepted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    (tmp_path / "version.stdout").write_text(
+        "Docker Sandbox build 19\nrelease v12.40.7-beta+abc123\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "version.stderr").write_text("version warning\n", encoding="utf-8")
+    (tmp_path / "parser.stderr").write_text("parser warning\n", encoding="utf-8")
+    (tmp_path / "validator.stderr").write_text(
+        "validator warning\n", encoding="utf-8"
+    )
+    (tmp_path / "validator.stdout").write_text(
+        "VALID with detailed success output\n", encoding="utf-8"
+    )
+    write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 0
+    assert "version warning" not in result.stderr
+    assert "parser warning" not in result.stderr
+    assert "validator warning" not in result.stderr
+    assert "detailed success output" not in result.stdout
+    assert "detailed success output" not in (project / "specode_loop.log").read_text(
+        encoding="utf-8"
+    )
+    calls = calls_log.read_text(encoding="utf-8").splitlines()
+    assert calls[:3] == [
+        "version|",
+        "create|--no-share-skills --help",
+        f"kit|validate {WORKFLOW_KIT}",
+    ]
+
+
+def test_version_failures_are_actionable_compatibility_failures(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    scenarios = [
+        ("failed", "v0.38.1\n", "7\n", "observed version 0.38.1"),
+        ("unparseable", "development build\n", None, "observed version unavailable"),
+        (
+            "old",
+            "sbx v0.36.9+old; compatibility library v99.0.0\n",
+            None,
+            "observed version 0.36.9",
+        ),
+    ]
+
+    for _name, stdout, status, observed in scenarios:
+        (tmp_path / "version.stdout").write_text(stdout, encoding="utf-8")
+        if status is None:
+            (tmp_path / "version.status").unlink(missing_ok=True)
+        else:
+            (tmp_path / "version.status").write_text(status, encoding="utf-8")
+        calls_log.unlink(missing_ok=True)
+
+        result = run_loop(project, path=path)
+
+        assert result.returncode == 1
+        assert "Docker Sandbox compatibility failure: version check" in result.stderr
+        assert observed in result.stderr
+        assert "minimum version 0.37.0" in result.stderr
+        assert "upgrade Docker Sandbox and retry" in result.stderr
+        assert not (project / "specode_loop.log").exists()
+        assert calls_log.read_text(encoding="utf-8").splitlines() == ["version|"]
+
+
+def test_parser_rejection_is_an_actionable_compatibility_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    (tmp_path / "parser.status").write_text("2\n", encoding="utf-8")
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 1
+    assert "Docker Sandbox compatibility failure: create parser check" in result.stderr
+    assert "observed version 0.37.0" in result.stderr
+    assert "minimum version 0.37.0" in result.stderr
+    assert "upgrade Docker Sandbox and retry" in result.stderr
+    assert not (project / "specode_loop.log").exists()
+    assert calls_log.read_text(encoding="utf-8").splitlines() == [
+        "version|",
+        "create|--no-share-skills --help",
+    ]
+
+
+def test_parser_launch_failure_is_an_actionable_compatibility_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    (tmp_path / "version.remove-sbx").write_text("remove\n", encoding="utf-8")
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 1
+    assert "Docker Sandbox compatibility failure: create parser check" in result.stderr
+    assert "observed version 0.37.0" in result.stderr
+    assert "minimum version 0.37.0" in result.stderr
+    assert "upgrade Docker Sandbox and retry" in result.stderr
+    assert not (project / "specode_loop.log").exists()
+    assert calls_log.read_text(encoding="utf-8").splitlines() == ["version|"]
+
+
+def test_validator_launch_failure_is_an_actionable_compatibility_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    (tmp_path / "parser.remove-sbx").write_text("remove\n", encoding="utf-8")
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 1
+    assert "Docker Sandbox compatibility failure: kit validator launch" in result.stderr
+    assert "observed version 0.37.0" in result.stderr
+    assert "minimum version 0.37.0" in result.stderr
+    assert "upgrade Docker Sandbox and retry" in result.stderr
+    assert not (project / "specode_loop.log").exists()
+    assert calls_log.read_text(encoding="utf-8").splitlines() == [
+        "version|",
+        "create|--no-share-skills --help",
+    ]
+
+
+def test_validator_rejection_is_an_actionable_bounded_invalid_kit_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    project = make_project(tmp_path)
+    path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
+    diagnostic = "invalid field: " + ("x" * 5000)
+    (tmp_path / "validator.stderr").write_text(diagnostic, encoding="utf-8")
+    (tmp_path / "validator.status").write_text("1\n", encoding="utf-8")
+
+    result = run_loop(project, path=path)
+
+    assert result.returncode == 1
+    assert "Error: invalid Workflow Kit: Docker validation failed" in result.stderr
+    assert str(WORKFLOW_KIT) in result.stderr
+    assert "invalid field:" in result.stderr
+    assert len(result.stderr) < 1500
+    assert "restore or reinstall the checked-in kit and retry" in result.stderr
+    assert not (project / "specode_loop.log").exists()
+    assert calls_log.read_text(encoding="utf-8").splitlines() == [
+        "version|",
+        "create|--no-share-skills --help",
+        f"kit|validate {WORKFLOW_KIT}",
+    ]
 
 
 def test_dirty_git_state_warns_and_continues(tmp_path: Path, monkeypatch) -> None:
@@ -727,22 +1068,20 @@ def test_dirty_git_state_warns_and_continues(tmp_path: Path, monkeypatch) -> Non
     assert_sandbox_called(calls_log)
 
 
-def test_missing_global_do_work_skill_falls_back_to_bundled_skill(tmp_path: Path, monkeypatch) -> None:
+def test_missing_host_skill_does_not_trigger_target_project_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = make_project(tmp_path)
     path, calls_log, _rm_log = prepare_fake_runtime(tmp_path, monkeypatch)
     write_scenario(tmp_path, 1, "ALL TASKS DONE\n")
 
     result = run_loop(project, path=path, codex_home=tmp_path / "missing-codex-home")
 
-    copied_skill = project / ".agents" / "skills" / "specode-do-work" / "SKILL.md"
     assert result.returncode == 0
-    assert not (project / ".agents" / "skills" / "do-work").exists()
-    assert "Global workflow skill synced: do-work:" not in result.stdout
-    assert copied_skill.read_text(encoding="utf-8") == (SPECODE_SKILL / "SKILL.md").read_text(encoding="utf-8")
-    assert "Bundled workflow skill synced: specode-do-work:" in result.stdout
+    assert not (project / ".agents").exists()
+    assert "workflow skill synced" not in result.stdout.lower()
     calls = assert_sandbox_called(calls_log)
-    assert f"skill-before-exec|{project / '.agents' / 'skills' / 'do-work' / 'SKILL.md'}|missing" in calls
-    assert f"skill-before-exec|{copied_skill}|present" in calls
+    assert f"--kit {WORKFLOW_KIT} codex {project}" in calls
 
 
 def test_invalid_options_fail_before_sandbox_execution(tmp_path: Path, monkeypatch) -> None:
@@ -877,7 +1216,11 @@ def test_missing_runtime_prerequisites_fail_before_sandbox_execution(tmp_path: P
     result = run_loop(project, path="")
 
     assert result.returncode == 1
-    assert "Error: Docker Sandbox CLI 'sbx' is not installed or not on PATH" in result.stderr
+    assert "Docker Sandbox compatibility failure: CLI discovery" in result.stderr
+    assert "Docker Sandbox CLI 'sbx' is not installed or not on PATH" in result.stderr
+    assert "minimum version 0.37.0" in result.stderr
+    assert "upgrade Docker Sandbox and retry" in result.stderr
+    assert not (project / "specode_loop.log").exists()
 
     path, calls_log = install_fake_sbx(tmp_path)
     monkeypatch.setenv("FAKE_SBX_CALLS", str(calls_log))

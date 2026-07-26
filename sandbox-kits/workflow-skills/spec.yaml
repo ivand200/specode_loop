@@ -1,0 +1,3 @@
+schemaVersion: "1"
+kind: mixin
+name: specode-loop-workflow-skills

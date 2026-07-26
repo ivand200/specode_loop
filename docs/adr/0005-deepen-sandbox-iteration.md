@@ -10,7 +10,7 @@ cleanup.
 
 The user-facing `scripts/specode_loop.py` remains responsible for command
 parsing, Planning Document and Target Project preflight, authentication,
-workflow-skill provisioning, project-log initialization, process-wide signal
+Workflow Kit validation, project-log initialization, process-wide signal
 policy, cross-iteration continuation, the maximum-iteration policy, and final
 process status. Its only Sandbox Iteration dependency is the sibling
 `scripts/specode_loop_iteration.py` module, imported in one direction. The
@@ -18,8 +18,10 @@ iteration module never imports the runner.
 
 The iteration module exposes exactly three public names:
 `SandboxIterationRequest`, `SandboxIterationOutcome`, and
-`run_sandbox_iteration`. A frozen request carries already-validated values. One
-function call creates and executes at most one sandboxed Codex attempt and
+`run_sandbox_iteration`. The frozen request carries already-validated values,
+including the accepted absolute Workflow Kit path, without exposing Docker
+command options. One function call creates and executes at most one sandboxed
+Codex attempt and
 returns one exhaustive outcome: one Plan Task completed, all Plan Tasks
 completed, or failure. The runner matches those outcomes explicitly and does
 not inspect command status, Success Sentinel evidence, sandbox identity,

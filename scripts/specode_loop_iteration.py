@@ -18,8 +18,6 @@ __all__ = [
 ]
 
 _API_KEY_ENVIRONMENT_VARIABLES = ("OPENAI_API_KEY", "CODEX_API_KEY")
-_PREFERRED_WORKFLOW_SKILL = "do-work"
-_FALLBACK_WORKFLOW_SKILL = "specode-do-work"
 _TASK_DONE_SENTINEL = "TASK DONE"
 _ALL_TASKS_DONE_SENTINEL = "ALL TASKS DONE"
 _FAILURE_EXCERPT_LINES = 30
@@ -29,6 +27,7 @@ _ALLOWED_REASONING_EFFORTS = {"", "minimal", "low", "medium", "high", "xhigh"}
 @_dataclass(frozen=True)
 class SandboxIterationRequest:
     target_project: _Path
+    workflow_kit: _Path
     prd_role_path: _Path
     plan_role_path: _Path
     iteration: int
@@ -57,6 +56,15 @@ def _validate_request(request: SandboxIterationRequest) -> None:
         or not resolved_target_project.is_dir()
     ):
         raise ValueError("Target Project must be an existing resolved directory")
+    try:
+        resolved_workflow_kit = request.workflow_kit.resolve(strict=True)
+    except OSError as error:
+        raise ValueError("Workflow Kit must be an existing resolved directory") from error
+    if (
+        request.workflow_kit != resolved_workflow_kit
+        or not resolved_workflow_kit.is_dir()
+    ):
+        raise ValueError("Workflow Kit must be an existing resolved directory")
     for role, role_path in (
         ("prd", request.prd_role_path),
         ("plan", request.plan_role_path),
@@ -117,8 +125,7 @@ def _build_prompt(request: SandboxIterationRequest) -> str:
 Project root:
 {request.target_project}
 
-Invoke the ${_PREFERRED_WORKFLOW_SKILL} skill if it is available in this sandbox.
-If the preferred copy is unavailable, invoke ${_PREFERRED_WORKFLOW_SKILL} from the project-local .agents/skills/{_FALLBACK_WORKFLOW_SKILL} directory.
+Use the `$specode-loop-implement` skill to execute this iteration.
 
 PRD document: {request.prd_role_path}
 Plan document: {request.plan_role_path}
@@ -385,32 +392,41 @@ def run_sandbox_iteration(
         create_command = [
             "sbx",
             "create",
+            "--no-share-skills",
             "--name",
             sandbox_name,
+            "--kit",
+            str(request.workflow_kit),
             "codex",
             str(request.target_project),
         ]
         command_status = _stream_sandbox_command(create_command, request, transcript)
-        if command_status == 0:
-            codex_args = [
-                "exec",
-                "--dangerously-bypass-approvals-and-sandbox",
-                "--skip-git-repo-check",
-                "-C",
-                str(request.target_project),
-            ]
-            if request.model:
-                codex_args.extend(["-m", request.model])
-            if request.reasoning_effort:
-                codex_args.extend(
-                    ["-c", f'model_reasoning_effort="{request.reasoning_effort}"']
-                )
-            codex_args.extend(["-o", str(final_message), _build_prompt(request)])
-            command_status = _stream_sandbox_command(
-                ["sbx", "exec", sandbox_name, "codex", *codex_args],
+        if command_status != 0:
+            _log_line(
                 request,
-                transcript,
+                f"===== iteration {request.iteration} status: FAILED, sandbox creation / Workflow Kit application failed (command exit code: {command_status}) =====",
             )
+            return outcome
+
+        codex_args = [
+            "exec",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--skip-git-repo-check",
+            "-C",
+            str(request.target_project),
+        ]
+        if request.model:
+            codex_args.extend(["-m", request.model])
+        if request.reasoning_effort:
+            codex_args.extend(
+                ["-c", f'model_reasoning_effort="{request.reasoning_effort}"']
+            )
+        codex_args.extend(["-o", str(final_message), _build_prompt(request)])
+        command_status = _stream_sandbox_command(
+            ["sbx", "exec", sandbox_name, "codex", *codex_args],
+            request,
+            transcript,
+        )
 
         _report_final_message(request, final_message, transcript)
 
