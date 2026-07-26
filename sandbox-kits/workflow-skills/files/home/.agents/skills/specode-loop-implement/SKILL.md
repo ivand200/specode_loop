@@ -12,7 +12,7 @@ Take the first eligible undone AFK Plan Task and implement it.
 
 ### 1. Understand the task
 
-Read any referenced plan or PRD. Explore the codebase to understand the relevant files, patterns, and conventions. If the task is ambiguous, ask the user to clarify scope before proceeding.
+Read any referenced plan(`tickets`) or PRD(`spec`) (`tasks/<task-name>/spec-<task-name>.md` and `tickets-<task-name>.md`). Explore the codebase to understand the relevant files, patterns, and conventions. If the task is ambiguous, ask the user to clarify scope before proceeding.
 
 ### 2. Plan the implementation (optional)
 
@@ -20,7 +20,7 @@ If the task has not already been planned, create a plan for it.
 
 ### 3. Implement
 
-**For backend code**: use red/green/refactor, one test at a time in a tracer-bullet style. Use `/tdd` skill where possible, at pre-agreed seams.
+**For backend code**: use red/green/refactor, one test at a time in a tracer-bullet style. Use `$tdd` skill where possible, at pre-agreed seams.
 Core principle: Tests should verify behavior through public interfaces, not implementation details. Code can change entirely; tests shouldn't.
 
 Each test should target one thin vertical slice through the system. Do not write all tests upfront — write one, make it pass, then move to the next.
