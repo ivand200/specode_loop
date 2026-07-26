@@ -257,37 +257,142 @@ attest the archive, or deploy anything.
 
 ### Real E2E
 
-Run the optional real E2E harness only when `sbx`, Docker Sandbox auth, network
-access, and real Codex execution are available:
+Real Docker Sandbox/Codex E2E is a trusted local-machine activity. It is not
+part of deterministic pull-request CI or the credential-free release-readiness
+workflow, and GitHub never receives its credentials, paid requests, temporary
+Target Projects, logs, or receipts.
+
+#### Exploratory local runs
+
+Developers may run any individual harness from any branch or working tree when
+`sbx`, Docker Sandbox authentication, network access, and real Codex execution
+are available. These runs provide exploratory feedback; they do not qualify a
+commit for a release tag.
+
+Run the focused one-request authentication harness against Docker Sandbox's
+globally configured OpenAI credential:
 
 ```bash
 unset OPENAI_API_KEY CODEX_API_KEY
-bash tests/specode_loop_python-e2e.sh
+bash tests/specode_loop_auth-e2e.sh
 ```
 
-Run the focused two-project Workflow Kit E2E to verify real service-skill
-discovery, deliberate project override precedence, Target Project invariance,
-and sandbox removal:
+Run the two-request Workflow Kit harness to verify real service-skill discovery,
+deliberate project override precedence, Target Project invariance, and sandbox
+removal:
 
 ```bash
 unset OPENAI_API_KEY CODEX_API_KEY
 bash tests/specode_loop_workflow_kit-e2e.sh
 ```
 
-Run a focused one-request authentication E2E against the globally configured
-Docker Sandbox OpenAI credential:
+Run the complete example-project harness, which can use up to five requests:
 
 ```bash
-# OAuth (default)
-bash tests/specode_loop_auth-e2e.sh
+unset OPENAI_API_KEY CODEX_API_KEY
+bash tests/specode_loop_python-e2e.sh
+```
 
-# Deliberate API-key mode
+OAuth is the default and the only mode accepted for release qualification.
+Deliberate API-key coverage is optional when authentication behavior changes,
+but it cannot replace the qualifying OAuth run:
+
+```bash
 SPECODE_LOOP_AUTH_E2E_MODE=api-key \
   bash tests/specode_loop_auth-e2e.sh
 ```
 
+#### Release-qualifying local run
+
+Before creating a version tag, qualify the exact commit intended for that tag.
+Start from the repository root, check out the commit, and require a clean
+working tree. Record the full SHA for the receipt and stop if `git status`
+prints anything:
+
+```bash
+git switch --detach INTENDED_COMMIT
+git status --short
+git rev-parse HEAD
+```
+
+Run the credential-free contract first. Every command must pass against that
+same clean commit:
+
+```bash
+uv sync --locked
+uv run --locked ruff format --check .
+uv run --locked ruff check --output-format=github .
+uv run --locked pytest
+```
+
+Then verify the local prerequisites: `sbx` 0.37.0 or newer is operational,
+Docker Sandbox networking can reach the required services, and the global
+`openai` secret contains a working OAuth credential. Do not print or copy the
+credential into the receipt.
+
+```bash
+sbx --version
+sbx secret ls -g --service openai
+sbx policy check network api.openai.com
+```
+
+Choose and record one model for all three harnesses. Remove inherited API-key
+variables, explicitly select OAuth, and run the harnesses in cheapest-first
+order:
+
+```bash
+export SPECODE_LOOP_AUTH_E2E_MODEL=gpt-5.6-sol
+export SPECODE_LOOP_WORKFLOW_KIT_E2E_MODEL=gpt-5.6-sol
+export SPECODE_LOOP_PYTHON_E2E_MODEL=gpt-5.6-sol
+unset OPENAI_API_KEY CODEX_API_KEY
+unset SPECODE_LOOP_AUTH_E2E_MODE SPECODE_LOOP_E2E_AUTH
+unset SPECODE_LOOP_WORKFLOW_KIT_E2E_AUTH SPECODE_LOOP_PYTHON_E2E_AUTH
+bash tests/specode_loop_auth-e2e.sh
+bash tests/specode_loop_workflow_kit-e2e.sh
+bash tests/specode_loop_python-e2e.sh
+```
+
+The complete qualifying run plans at most eight real requests: one for
+authentication, two for the Workflow Kit cases, and up to five for the example
+project. The harnesses fail fast and must not be wrapped in automatic retries.
+Stop after any failure, classify it, and record the requests already used.
+
+- A **product failure** is an incorrect exit, failed behavioral assertion,
+  missing sentinel, incorrect project state, or incorrect cleanup while the
+  prerequisites are healthy. Fix the product and restart qualification on the
+  corrected clean commit.
+- An **infrastructure failure** is unavailable `sbx` or Docker Sandbox,
+  missing or expired OAuth, provider/network unavailability, or rate limiting
+  before product behavior can be evaluated. After remediation, the operator
+  may manually rerun only the failed harness.
+
+Both failure classes block qualification. A targeted infrastructure rerun does
+not erase the original result: record both attempts. All three harnesses must
+ultimately pass with OAuth against the same clean commit before it is tagged.
+
+#### Receipt and cleanup
+
+Keep one minimal Markdown or text receipt under
+`test_dir/real-e2e-evidence/` for 30 days. This directory is ignored and must
+never be committed or uploaded. Record only:
+
+- exact commit SHA and clean-working-tree confirmation;
+- UTC start and end times;
+- `sbx` version, selected model, and `oauth` mode;
+- each command and pass/fail result;
+- planned and used real-request counts; and
+- any failure classification, remediation, and targeted-rerun result.
+
+Never put OAuth material, API keys, raw transcripts, verbose logs, or temporary
+Target Projects in routine evidence. A failed harness can leave a temporary
+directory for diagnosis; delete the exact directory it reports after the issue
+is understood. Remove any other diagnostic data before the receipt expires.
+The tag-triggered release-readiness workflow separately verifies the
+credential-free archive; GitHub does not ingest or validate this local receipt.
+
 ## More Detail
 
 Architecture decisions live in `docs/adr/`. Root-level local planning files,
-logs, secrets, `.codex/`, generated fixtures, and `/tasks` are intentionally
-kept out of version control for local development.
+logs, secrets, `.codex/`, generated fixtures, `/tasks`, `/AGENTS.md`, and
+`/test_dir` are intentionally kept out of version control for local
+development.
