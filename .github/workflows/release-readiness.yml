@@ -19,17 +19,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  resolve_candidate:
+    name: Resolve candidate commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      candidate_sha: ${{ steps.resolve.outputs.candidate_sha }}
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_ref || github.sha }}
+          persist-credentials: false
+      - name: Resolve candidate commit
+        id: resolve
+        shell: bash
+        run: echo "candidate_sha=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+
   quality:
     name: Ruff quality
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    needs: resolve_candidate
     permissions:
       contents: read
     steps:
       - name: Check out candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.candidate_ref || github.ref }}
+          ref: ${{ needs.resolve_candidate.outputs.candidate_sha }}
           persist-credentials: false
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -52,6 +72,7 @@ jobs:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    needs: resolve_candidate
     permissions:
       contents: read
     strategy:
@@ -64,7 +85,7 @@ jobs:
       - name: Check out candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.candidate_ref || github.ref }}
+          ref: ${{ needs.resolve_candidate.outputs.candidate_sha }}
           persist-credentials: false
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -86,6 +107,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     needs:
+      - resolve_candidate
       - quality
       - tests
     permissions:
@@ -94,7 +116,7 @@ jobs:
       - name: Check out candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.candidate_ref || github.ref }}
+          ref: ${{ needs.resolve_candidate.outputs.candidate_sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Verify tag is reachable from main
