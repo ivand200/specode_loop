@@ -224,6 +224,29 @@ uv run --locked pytest
 GitHub Actions does not receive Docker Sandbox or OpenAI credentials and does
 not execute real-request E2E harnesses.
 
+#### Protected `main` merge contract
+
+One active repository ruleset targets only `main`. Changes must arrive through
+a pull request with a successful, current `CI / required` result. If `main`
+changes after a pull request is checked, update the branch and wait for the
+required check to pass again before merging. Pending, failed, cancelled, or
+stale results block the merge.
+
+The ruleset blocks direct pushes, force pushes, and deletion of `main`. It
+requires zero approving reviews so the solo maintainer can merge their own
+green pull request, but it grants no routine bypass to administrators or any
+other actor. Signed commits, linear history, code-owner review, conversation
+resolution, merge queue, and deployment requirements are intentionally outside
+this repository's merge contract.
+
+If a workflow defect prevents `CI / required` from being created, an
+administrator may deliberately disable or edit the ruleset only long enough to
+repair the broken merge gate. Record the reason, keep the repair minimal, then
+restore the ruleset and repeat the acceptance checks: a follow-up pull request
+must require a current green `CI / required` result, and direct pushes, force
+pushes, and deletion of `main` must be rejected. This emergency procedure is not
+a configured bypass or a normal merge path.
+
 ### Dependency maintenance
 
 Dependabot checks the repository root weekly for GitHub Actions and `uv`
