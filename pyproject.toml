@@ -8,7 +8,7 @@ dependencies = []
 [dependency-groups]
 dev = [
     "pytest>=8.0",
-    "ruff>=0.14.0",
+    "ruff>=0.16.1",
 ]
 
 [tool.ruff]
